@@ -109,7 +109,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: master
 
       - name: Download artifact
         uses: actions/download-artifact@v4
@@ -179,9 +179,6 @@ jobs:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
           scope: '@cometix'
-
-      - name: Update npm (OIDC requires >= 11.5.1)
-        run: npm install -g npm@latest
 
       - name: Publish to npm (OIDC Trusted Publishing)
         working-directory: cc
