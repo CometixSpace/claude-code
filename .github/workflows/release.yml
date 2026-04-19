@@ -23,11 +23,9 @@ jobs:
       versions: ${{ steps.detect.outputs.versions }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-
       - run: npm ci
 
       - name: Detect new versions
@@ -39,15 +37,10 @@ jobs:
             echo "versions=[\"${{ inputs.version }}\"]" >> "$GITHUB_OUTPUT"
             echo "Manual: ${{ inputs.version }}"
           else
-            # Get existing releases
             EXISTING=$(gh release list --limit 200 --json tagName \
               --jq '[.[].tagName | ltrimstr("v")]' 2>/dev/null || echo '[]')
-            echo "Existing releases: $EXISTING"
-
-            # Check for new versions
             VERSIONS=$(node scripts/check-new-versions.mjs \
               --existing "$EXISTING" --json)
-            echo "New versions: $VERSIONS"
             echo "versions=$VERSIONS" >> "$GITHUB_OUTPUT"
           fi
 
@@ -61,39 +54,69 @@ jobs:
         version: ${{ fromJson(needs.check.outputs.versions) }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-
       - run: npm ci
 
-      - name: Build v${{ matrix.version }}
+      - name: Build all packages
         run: |
           node scripts/fetch-and-process.mjs \
             --version "${{ matrix.version }}" \
             --output "./dist/${{ matrix.version }}"
 
-      - name: Verify build
+      - name: Verify main package
         run: |
-          cd "./dist/${{ matrix.version }}/cc"
-          npm install --production --no-audit --no-fund
+          DIST="./dist/${{ matrix.version }}"
+
+          # Simulate postinstall with linux-x64 platform package
+          cp "$DIST/packages/linux-x64/cli.js" "$DIST/main/cli.js"
+          cp -r "$DIST/packages/linux-x64/vendor" "$DIST/main/vendor"
+
+          cd "$DIST/main"
+          npm install --omit=optional --no-audit --no-fund
           node cli.js --version
           node cli.js --help | head -5
-          # Clean up node_modules before packaging
-          rm -rf node_modules package-lock.json
 
-      - name: Package tarball
+          # Clean up
+          rm -rf node_modules package-lock.json vendor cli.js
+          # Restore placeholder
+          cp ../../main-cli-backup.js cli.js 2>/dev/null || true
+
+      - name: Package tarballs
         run: |
-          cd "./dist/${{ matrix.version }}"
-          mv cc package
-          tar czf "../../claude-code-node-${{ matrix.version }}.tar.gz" package/
+          DIST="./dist/${{ matrix.version }}"
+          VERSION="${{ matrix.version }}"
+          mkdir -p ./artifacts
 
-      - name: Upload artifact
+          # Main package
+          cd "$DIST/main"
+          mv . /tmp/package-main
+          mkdir -p /tmp/package-main-wrap/package
+          cp -r /tmp/package-main/* /tmp/package-main-wrap/package/
+          tar czf "$GITHUB_WORKSPACE/artifacts/cometix-claude-code-${VERSION}.tgz" \
+            -C /tmp/package-main-wrap package/
+          rm -rf /tmp/package-main /tmp/package-main-wrap
+          cd "$GITHUB_WORKSPACE"
+
+          # Platform packages
+          for platform in darwin-arm64 darwin-x64 linux-arm64 linux-x64 linux-arm64-musl linux-x64-musl win32-arm64 win32-x64 android-arm64; do
+            if [ -d "$DIST/packages/$platform" ]; then
+              mkdir -p /tmp/package-wrap/package
+              cp -r "$DIST/packages/$platform"/* /tmp/package-wrap/package/
+              tar czf "./artifacts/cometix-claude-code-${platform}-${VERSION}.tgz" \
+                -C /tmp/package-wrap package/
+              rm -rf /tmp/package-wrap
+            fi
+          done
+
+          ls -lh ./artifacts/
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: claude-code-node-${{ matrix.version }}
-          path: claude-code-node-${{ matrix.version }}.tar.gz
+          name: packages-${{ matrix.version }}
+          path: artifacts/
 
   release:
     needs: [check, build]
@@ -110,16 +133,16 @@ jobs:
         with:
           ref: master
 
-      - name: Download artifact
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          name: claude-code-node-${{ matrix.version }}
+          name: packages-${{ matrix.version }}
+          path: artifacts/
 
-      - name: Sync CHANGELOG from upstream
+      - name: Sync CHANGELOG
         run: |
           curl -sL "https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md" \
             -o CHANGELOG.md
-
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add CHANGELOG.md
@@ -130,12 +153,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ matrix.version }}"
-          TARBALL="claude-code-node-${VERSION}.tar.gz"
 
-          # Check if release exists
           if gh release view "v${VERSION}" --repo "$GITHUB_REPOSITORY" &>/dev/null; then
             if [ "${{ inputs.force }}" = "true" ]; then
-              echo "Force mode: deleting existing release v${VERSION}"
               gh release delete "v${VERSION}" --repo "$GITHUB_REPOSITORY" --yes
             else
               echo "Release v${VERSION} already exists, skipping"
@@ -149,9 +169,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "v${VERSION}" \
             --notes "$BODY" \
-            "${TARBALL}"
-
-          echo "✓ Released v${VERSION}"
+            artifacts/*
 
   publish:
     needs: [check, build]
@@ -165,10 +183,11 @@ jobs:
       matrix:
         version: ${{ fromJson(needs.check.outputs.versions) }}
     steps:
-      - name: Download artifact
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          name: claude-code-node-${{ matrix.version }}
+          name: packages-${{ matrix.version }}
+          path: artifacts/
 
       - uses: actions/setup-node@v4
         with:
@@ -176,15 +195,26 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
           scope: '@cometix'
 
-      - name: Publish to npm (OIDC Trusted Publishing)
+      - name: Publish platform packages
         run: |
-          TARBALL="claude-code-node-${{ matrix.version }}.tar.gz"
           VERSION="${{ matrix.version }}"
+          for tgz in artifacts/cometix-claude-code-*-${VERSION}.tgz; do
+            PKG=$(basename "$tgz" | sed "s/-${VERSION}.tgz//" | sed 's/^cometix-/@cometix\//')
+            echo "Publishing ${PKG}@${VERSION}..."
+            if npm view "${PKG}@${VERSION}" version &>/dev/null 2>&1; then
+              echo "  Already published, skipping"
+            else
+              npm publish "$tgz" --access public --provenance || echo "  Failed (may need package init)"
+            fi
+          done
 
-          if npx npm@latest view "@cometix/claude-code@${VERSION}" version &>/dev/null; then
+      - name: Publish main package
+        run: |
+          VERSION="${{ matrix.version }}"
+          TARBALL="artifacts/cometix-claude-code-${VERSION}.tgz"
+          if npm view "@cometix/claude-code@${VERSION}" version &>/dev/null 2>&1; then
             echo "Already published, skipping"
-            exit 0
+          else
+            npm publish "$TARBALL" --access public --provenance
+            echo "Published @cometix/claude-code@${VERSION}"
           fi
-
-          npx npm@latest publish "${TARBALL}" --access public --provenance
-          echo "✓ Published @cometix/claude-code@${VERSION}"
