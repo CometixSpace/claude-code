@@ -6,6 +6,7 @@ import { extractBunSEA } from './bun-sea-extract.mjs';
 import { patchFile } from './node-compat-patch.mjs';
 import { buildPlatformPackage } from './build-platform-package.mjs';
 import { buildMainPackage } from './build-main-package.mjs';
+import { verifyNodeCompat } from './verify-node-compat.mjs';
 
 // ──────────────────────────────────────────────
 //  Constants
@@ -208,6 +209,16 @@ export async function fetchAndProcess({
         await writeFile(outPath, mod.contents);
       }
     }
+
+    // Verify Node.js compatibility before patching
+    const cliSrc = join(extractDir, 'src', 'entrypoints', 'cli.js');
+    const { compatible, fatal } = verifyNodeCompat(cliSrc);
+    if (!compatible) {
+      console.error(`  ✗ ${platform} — Node.js compat check failed (${fatal} fatal)`);
+      console.error('    Anthropic may have removed dual-runtime fallbacks. Aborting.');
+      process.exit(1);
+    }
+    console.log(`  ✓ ${platform} — Node.js compat verified`);
 
     // Patch cli.js
     const patchedPath = join(tmpDir, 'patched', `${platform}.js`);
