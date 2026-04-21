@@ -68,20 +68,21 @@ jobs:
       - name: Verify main package
         run: |
           DIST="./dist/${{ matrix.version }}"
+          VERIFY=/tmp/verify-main
+
+          # Copy main package to temp dir for verification
+          cp -r "$DIST/main" "$VERIFY"
 
           # Simulate postinstall with linux-x64 platform package
-          cp "$DIST/packages/linux-x64/cli.js" "$DIST/main/cli.js"
-          cp -r "$DIST/packages/linux-x64/vendor" "$DIST/main/vendor"
+          cp "$DIST/packages/linux-x64/cli.js" "$VERIFY/cli.js"
+          cp -r "$DIST/packages/linux-x64/vendor" "$VERIFY/vendor"
 
-          cd "$DIST/main"
+          cd "$VERIFY"
           npm install --omit=optional --no-audit --no-fund
           node cli.js --version
           node cli.js --help | head -5
 
-          # Clean up
-          rm -rf node_modules package-lock.json vendor cli.js
-          # Restore placeholder
-          cp ../../main-cli-backup.js cli.js 2>/dev/null || true
+          rm -rf "$VERIFY"
 
       - name: Package tarballs
         run: |
@@ -90,23 +91,18 @@ jobs:
           mkdir -p ./artifacts
 
           # Main package
-          cd "$DIST/main"
-          mv . /tmp/package-main
-          mkdir -p /tmp/package-main-wrap/package
-          cp -r /tmp/package-main/* /tmp/package-main-wrap/package/
-          tar czf "$GITHUB_WORKSPACE/artifacts/cometix-claude-code-${VERSION}.tgz" \
-            -C /tmp/package-main-wrap package/
-          rm -rf /tmp/package-main /tmp/package-main-wrap
-          cd "$GITHUB_WORKSPACE"
+          mkdir -p /tmp/pkg-wrap/package
+          cp -r "$DIST/main"/* /tmp/pkg-wrap/package/
+          tar czf "./artifacts/cometix-claude-code-${VERSION}.tgz" -C /tmp/pkg-wrap package/
+          rm -rf /tmp/pkg-wrap
 
           # Platform packages
           for platform in darwin-arm64 darwin-x64 linux-arm64 linux-x64 linux-arm64-musl linux-x64-musl win32-arm64 win32-x64 android-arm64; do
             if [ -d "$DIST/packages/$platform" ]; then
-              mkdir -p /tmp/package-wrap/package
-              cp -r "$DIST/packages/$platform"/* /tmp/package-wrap/package/
-              tar czf "./artifacts/cometix-claude-code-${platform}-${VERSION}.tgz" \
-                -C /tmp/package-wrap package/
-              rm -rf /tmp/package-wrap
+              mkdir -p /tmp/pkg-wrap/package
+              cp -r "$DIST/packages/$platform"/* /tmp/pkg-wrap/package/
+              tar czf "./artifacts/cometix-claude-code-${platform}-${VERSION}.tgz" -C /tmp/pkg-wrap package/
+              rm -rf /tmp/pkg-wrap
             fi
           done
 
