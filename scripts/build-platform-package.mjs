@@ -96,6 +96,7 @@ export async function buildPlatformPackage({
     os: [os],
     cpu: [cpu],
     files: ['cli.js', 'vendor/'],
+    repository: { type: 'git', url: 'https://github.com/CometixSpace/claude-code.git' },
     license: 'SEE LICENSE IN README.md',
   };
   await writeFile(join(outputDir, 'package.json'), JSON.stringify(pkg, null, 2) + '\n');

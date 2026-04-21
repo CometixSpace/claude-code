@@ -201,7 +201,7 @@ jobs:
             if npm view "${PKG}@${VERSION}" version &>/dev/null 2>&1; then
               echo "  Already published, skipping"
             else
-              npm publish "$tgz" --access public --provenance || echo "  Failed (may need package init)"
+              npx npm@latest publish "$tgz" --access public --provenance || echo "  Failed (may need package init)"
             fi
           done
 
@@ -217,6 +217,6 @@ jobs:
           if npm view "@cometix/claude-code@${VERSION}" version &>/dev/null 2>&1; then
             echo "Already published, skipping"
           else
-            npm publish "$TARBALL" --access public --provenance
+            npx npm@latest publish "$TARBALL" --access public --provenance
             echo "Published @cometix/claude-code@${VERSION}"
           fi
