@@ -194,7 +194,8 @@ jobs:
       - name: Publish platform packages
         run: |
           VERSION="${{ matrix.version }}"
-          for tgz in artifacts/cometix-claude-code-*-${VERSION}.tgz; do
+          for tgz in ./artifacts/cometix-claude-code-*-${VERSION}.tgz; do
+            [ -f "$tgz" ] || continue
             PKG=$(basename "$tgz" | sed "s/-${VERSION}.tgz//" | sed 's/^cometix-/@cometix\//')
             echo "Publishing ${PKG}@${VERSION}..."
             if npm view "${PKG}@${VERSION}" version &>/dev/null 2>&1; then
@@ -207,7 +208,12 @@ jobs:
       - name: Publish main package
         run: |
           VERSION="${{ matrix.version }}"
-          TARBALL="artifacts/cometix-claude-code-${VERSION}.tgz"
+          TARBALL="./artifacts/cometix-claude-code-${VERSION}.tgz"
+          if [ ! -f "$TARBALL" ]; then
+            echo "Tarball not found: $TARBALL"
+            ls -la ./artifacts/
+            exit 1
+          fi
           if npm view "@cometix/claude-code@${VERSION}" version &>/dev/null 2>&1; then
             echo "Already published, skipping"
           else
