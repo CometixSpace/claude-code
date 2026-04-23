@@ -80,7 +80,7 @@ function isHardcodedBuildPath(node) {
 export function astPatch(code) {
   const ast = acorn.parse(code, { ecmaVersion: 2022, sourceType: 'script' });
   const replacements = [];
-  const stats = { p1Paths: 0, p1Requires: 0, p2: false, p3: 0 };
+  const stats = { p1Paths: 0, p1Requires: 0, p2: false, p3: 0, p5: false };
 
   walk(ast, (node) => {
     // P1: fileURLToPath("file:///home/runner/...") → __filename
@@ -142,6 +142,54 @@ export function astPatch(code) {
       stats.p3++;
       return;
     }
+
+    // P5: Restore isInBundledMode / hasEmbeddedSearchTools guard
+    //
+    // Bun inlines isEnvTruthy(process.env.EMBEDDED_SEARCH_TOOLS) → isEnvTruthy("true")
+    // on macOS/Linux native builds. This causes Glob/Grep tools to be removed.
+    //
+    // AST pattern:
+    //   FunctionDeclaration (params: 0)
+    //     BlockStatement
+    //       [0] IfStatement
+    //             test: UnaryExpression(!)
+    //               argument: CallExpression(args: [Literal("true")])
+    //             consequent: ReturnStatement
+    //       [1] VariableDeclaration
+    //             init: MemberExpression containing "CLAUDE_CODE_ENTRYPOINT"
+    //
+    // Fix: replace Literal("true") with process.env.EMBEDDED_SEARCH_TOOLS
+    //      so Node.js (without that env var) → false → Glob/Grep restored.
+    if (node.type === 'FunctionDeclaration' &&
+        node.params.length === 0 &&
+        node.body?.type === 'BlockStatement' &&
+        node.body.body.length >= 2) {
+      const s1 = node.body.body[0];
+      const s2 = node.body.body[1];
+
+      if (s1?.type === 'IfStatement' &&
+          s1.test?.type === 'UnaryExpression' &&
+          s1.test.operator === '!' &&
+          s1.test.argument?.type === 'CallExpression' &&
+          s1.test.argument.arguments?.length === 1 &&
+          s1.test.argument.arguments[0]?.type === 'Literal' &&
+          s1.test.argument.arguments[0]?.value === 'true' &&
+          s1.consequent?.type === 'ReturnStatement' &&
+          s2?.type === 'VariableDeclaration') {
+
+        const initSrc = code.slice(s2.declarations?.[0]?.init?.start ?? 0, s2.declarations?.[0]?.init?.end ?? 0);
+        if (initSrc.includes('CLAUDE_CODE_ENTRYPOINT')) {
+          const lit = s1.test.argument.arguments[0];
+          replacements.push({
+            start: lit.start,
+            end: lit.end,
+            replacement: 'process.env.EMBEDDED_SEARCH_TOOLS',
+          });
+          stats.p5 = true;
+          return;
+        }
+      }
+    }
   });
 
   const patched = applyReplacements(code, replacements);
@@ -169,6 +217,7 @@ export async function patchFile(inputPath, outputPath) {
   console.log(`[OK] P1: Patched ${s.p1Paths} fileURLToPath + ${s.p1Requires} createRequire`);
   console.log(`[${s.p2 ? 'OK' : '! '}] P2: Bun.Transpiler guard ${s.p2 ? 'patched' : 'not found'}`);
   console.log(`[${s.p3 > 0 ? 'OK' : '! '}] P3: Patched ${s.p3} $bunfs require paths`);
+  console.log(`[${s.p5 ? 'OK' : '! '}] P5: EMBEDDED_SEARCH_TOOLS guard ${s.p5 ? 'restored' : 'not found (may be Windows build)'}`);
 
   // AST validation
   try {
