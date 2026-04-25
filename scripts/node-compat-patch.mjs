@@ -54,15 +54,7 @@ export function stripBunWrapper(code) {
 
 export function addShebangHeader(code) {
   if (code.startsWith('#!')) return code;
-  const verMatch = code.match(/VERSION:"(\d+\.\d+\.\d+)"/);
-  const version = verMatch ? verMatch[1] : 'unknown';
-  return [
-    '#!/usr/bin/env node',
-    ' // (c) Anthropic PBC. All rights reserved. Use is subject to the Legal Agreements outlined here: https://code.claude.com/docs/en/legal-and-compliance.',
-    '',
-    `// Version: ${version}`,
-    '',
-  ].join('\n') + code;
+  return '#!/usr/bin/env node\n' + code;
 }
 
 // ──────────────────────────────────────────────
@@ -78,7 +70,7 @@ function isHardcodedBuildPath(node) {
 }
 
 export function astPatch(code) {
-  const ast = acorn.parse(code, { ecmaVersion: 2022, sourceType: 'script' });
+  const ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'script' });
   const replacements = [];
   const stats = { p1Paths: 0, p1Requires: 0, p2: false, p3: 0, p5: false };
 
@@ -221,7 +213,7 @@ export async function patchFile(inputPath, outputPath) {
 
   // AST validation
   try {
-    acorn.parse(code, { ecmaVersion: 2022, sourceType: 'script' });
+    acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'script' });
     console.log('[OK] Post-patch AST validation passed');
   } catch (e) {
     console.error('[X]  Post-patch AST validation FAILED:', e.message);
