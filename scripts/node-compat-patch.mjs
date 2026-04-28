@@ -61,12 +61,12 @@ export function addShebangHeader(code) {
 //  P1/P2/P3 AST-based patching
 // ──────────────────────────────────────────────
 
-const BUILD_PATH_PREFIX = 'file:///home/runner/work/claude-cli-internal/claude-cli-internal/';
-
 function isHardcodedBuildPath(node) {
-  return node.type === 'Literal' &&
-    typeof node.value === 'string' &&
-    node.value.startsWith(BUILD_PATH_PREFIX);
+  if (node.type !== 'Literal' || typeof node.value !== 'string') return false;
+  const v = node.value;
+  // Linux/macOS CI: file:///home/runner/work/claude-cli-internal/...
+  // Windows CI:     file:///D:/a/claude-cli-internal/... (any drive letter)
+  return v.includes('/claude-cli-internal/') && v.startsWith('file:///');
 }
 
 export function astPatch(code) {
