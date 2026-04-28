@@ -30,7 +30,7 @@ export async function buildMainPackage({
     name: '@cometix/claude-code',
     version,
     bin: { claude: 'cli.js' },
-    engines: { node: '>=18.0.0' },
+    engines: { node: '>=22.0.0' },
     scripts: { postinstall: 'node install.cjs' },
     author: 'Anthropic <support@anthropic.com>',
     license: 'SEE LICENSE IN README.md',
