@@ -22,10 +22,10 @@ jobs:
     outputs:
       versions: ${{ steps.detect.outputs.versions }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: 'latest'
       - run: npm ci
 
       - name: Detect new versions
@@ -53,10 +53,10 @@ jobs:
       matrix:
         version: ${{ fromJson(needs.check.outputs.versions) }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: 'latest'
       - run: npm ci
 
       - name: Build all packages
@@ -109,7 +109,7 @@ jobs:
           ls -lh ./artifacts/
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: packages-${{ matrix.version }}
           path: artifacts/
@@ -125,12 +125,12 @@ jobs:
       matrix:
         version: ${{ fromJson(needs.check.outputs.versions) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: master
 
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           name: packages-${{ matrix.version }}
           path: artifacts/
@@ -180,14 +180,14 @@ jobs:
         version: ${{ fromJson(needs.check.outputs.versions) }}
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           name: packages-${{ matrix.version }}
           path: artifacts/
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: '22'
+          node-version: 'latest'
           registry-url: 'https://registry.npmjs.org'
           scope: '@cometix'
 
