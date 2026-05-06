@@ -1,5 +1,10 @@
 import { readFile, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import * as acorn from 'acorn';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ──────────────────────────────────────────────
 //  AST helpers
@@ -217,6 +222,16 @@ export async function patchFile(inputPath, outputPath) {
     console.log('[OK] Post-patch AST validation passed');
   } catch (e) {
     console.error('[X]  Post-patch AST validation FAILED:', e.message);
+  }
+
+  // Inject Bun polyfill shim (for versions that removed typeof Bun guards)
+  const bunGuardCount = (code.match(/typeof Bun/g) || []).length;
+  if (bunGuardCount < 10) {
+    const polyfill = readFileSync(join(__dirname, '..', 'templates', 'bun-polyfill.js'), 'utf8');
+    code = polyfill + '\n' + code;
+    console.log(`[OK] P6: Injected Bun polyfill shim (${bunGuardCount} guards < 10 threshold)`);
+  } else {
+    console.log(`[! ] P6: Bun polyfill skipped (${bunGuardCount} guards >= 10 — dual-runtime fallbacks present)`);
   }
 
   // Add shebang header
