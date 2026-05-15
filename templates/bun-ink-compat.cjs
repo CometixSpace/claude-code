@@ -38,14 +38,317 @@ var require_emoji_regex = __commonJS({
   }
 });
 
-// bun-compat-entry.ts
-var bun_compat_entry_exports = {};
-__export(bun_compat_entry_exports, {
+// ../../../../../../private/tmp/width-overrides.cjs
+var require_width_overrides = __commonJS({
+  "../../../../../../private/tmp/width-overrides.cjs"(exports2, module2) {
+    var CODEPOINT_WIDTH_OVERRIDES = /* @__PURE__ */ new Map([
+      [2307, 1],
+      [2365, 1],
+      [2382, 1],
+      [2383, 1],
+      [2435, 1],
+      [2493, 1],
+      [2510, 1],
+      [2511, 1],
+      [2563, 1],
+      [2621, 1],
+      [2638, 1],
+      [2639, 1],
+      [2691, 1],
+      [2749, 1],
+      [2766, 1],
+      [2767, 1],
+      [2819, 1],
+      [2877, 1],
+      [2894, 1],
+      [2895, 1],
+      [2947, 1],
+      [3005, 1],
+      [3022, 1],
+      [3023, 1],
+      [3075, 1],
+      [3133, 1],
+      [3150, 1],
+      [3151, 1],
+      [3203, 1],
+      [3261, 1],
+      [3278, 1],
+      [3279, 1],
+      [3331, 1],
+      [3389, 1],
+      [3406, 1],
+      [3407, 1],
+      [8206, 0],
+      [8207, 0],
+      [8419, 2],
+      [9728, 1],
+      [9729, 1],
+      [9730, 1],
+      [9731, 1],
+      [9732, 1],
+      [9742, 1],
+      [9745, 1],
+      [9752, 1],
+      [9757, 1],
+      [9760, 1],
+      [9762, 1],
+      [9763, 1],
+      [9766, 1],
+      [9770, 1],
+      [9774, 1],
+      [9775, 1],
+      [9776, 1],
+      [9777, 1],
+      [9778, 1],
+      [9779, 1],
+      [9780, 1],
+      [9781, 1],
+      [9782, 1],
+      [9783, 1],
+      [9784, 1],
+      [9785, 1],
+      [9786, 1],
+      [9792, 1],
+      [9794, 1],
+      [9823, 1],
+      [9824, 1],
+      [9827, 1],
+      [9829, 1],
+      [9830, 1],
+      [9832, 1],
+      [9851, 1],
+      [9854, 1],
+      [9866, 1],
+      [9867, 1],
+      [9868, 1],
+      [9869, 1],
+      [9870, 1],
+      [9871, 1],
+      [9874, 1],
+      [9876, 1],
+      [9877, 1],
+      [9878, 1],
+      [9879, 1],
+      [9881, 1],
+      [9883, 1],
+      [9884, 1],
+      [9888, 1],
+      [9895, 1],
+      [9904, 1],
+      [9905, 1],
+      [9928, 1],
+      [9935, 1],
+      [9937, 1],
+      [9939, 1],
+      [9961, 1],
+      [9968, 1],
+      [9969, 1],
+      [9972, 1],
+      [9975, 1],
+      [9976, 1],
+      [9977, 1],
+      [9986, 1],
+      [9992, 1],
+      [9993, 1],
+      [9996, 1],
+      [9997, 1],
+      [9999, 1],
+      [10002, 1],
+      [10004, 1],
+      [10006, 1],
+      [10013, 1],
+      [10017, 1],
+      [10035, 1],
+      [10036, 1],
+      [10052, 1],
+      [10055, 1],
+      [10083, 1],
+      [10084, 1],
+      [10145, 1],
+      [12772, 1],
+      [12773, 1],
+      [19904, 1],
+      [19905, 1],
+      [19906, 1],
+      [19907, 1],
+      [19908, 1],
+      [19909, 1],
+      [19910, 1],
+      [19911, 1],
+      [19912, 1],
+      [19913, 1],
+      [19914, 1],
+      [19915, 1],
+      [19916, 1],
+      [19917, 1],
+      [19918, 1],
+      [19919, 1],
+      [19920, 1],
+      [19921, 1],
+      [19922, 1],
+      [19923, 1],
+      [19924, 1],
+      [19925, 1],
+      [19926, 1],
+      [19927, 1],
+      [19928, 1],
+      [19929, 1],
+      [19930, 1],
+      [19931, 1],
+      [19932, 1],
+      [19933, 1],
+      [19934, 1],
+      [19935, 1],
+      [19936, 1],
+      [19937, 1],
+      [19938, 1],
+      [19939, 1],
+      [19940, 1],
+      [19941, 1],
+      [19942, 1],
+      [19943, 1],
+      [19944, 1],
+      [19945, 1],
+      [19946, 1],
+      [19947, 1],
+      [19948, 1],
+      [19949, 1],
+      [19950, 1],
+      [19951, 1],
+      [19952, 1],
+      [19953, 1],
+      [19954, 1],
+      [19955, 1],
+      [19956, 1],
+      [19957, 1],
+      [19958, 1],
+      [19959, 1],
+      [19960, 1],
+      [19961, 1],
+      [19962, 1],
+      [19963, 1],
+      [19964, 1],
+      [19965, 1],
+      [19966, 1],
+      [19967, 1],
+      [127777, 1],
+      [127780, 1],
+      [127781, 1],
+      [127782, 1],
+      [127783, 1],
+      [127784, 1],
+      [127785, 1],
+      [127786, 1],
+      [127787, 1],
+      [127788, 1],
+      [127798, 1],
+      [127869, 1],
+      [127894, 1],
+      [127895, 1],
+      [127897, 1],
+      [127898, 1],
+      [127899, 1],
+      [127902, 1],
+      [127903, 1],
+      [127947, 1],
+      [127948, 1],
+      [127949, 1],
+      [127950, 1],
+      [127956, 1],
+      [127957, 1],
+      [127958, 1],
+      [127959, 1],
+      [127960, 1],
+      [127961, 1],
+      [127962, 1],
+      [127963, 1],
+      [127964, 1],
+      [127965, 1],
+      [127966, 1],
+      [127967, 1],
+      [127987, 1],
+      [127989, 1],
+      [127991, 1],
+      [128063, 1],
+      [128065, 1],
+      [128253, 1],
+      [128329, 1],
+      [128330, 1],
+      [128367, 1],
+      [128368, 1],
+      [128371, 1],
+      [128372, 1],
+      [128373, 1],
+      [128374, 1],
+      [128375, 1],
+      [128376, 1],
+      [128377, 1],
+      [128391, 1],
+      [128394, 1],
+      [128395, 1],
+      [128396, 1],
+      [128397, 1],
+      [128400, 1],
+      [128421, 1],
+      [128424, 1],
+      [128433, 1],
+      [128434, 1],
+      [128444, 1],
+      [128450, 1],
+      [128451, 1],
+      [128452, 1],
+      [128465, 1],
+      [128466, 1],
+      [128467, 1],
+      [128476, 1],
+      [128477, 1],
+      [128478, 1],
+      [128481, 1],
+      [128483, 1],
+      [128488, 1],
+      [128495, 1],
+      [128499, 1],
+      [128506, 1],
+      [128715, 1],
+      [128717, 1],
+      [128718, 1],
+      [128719, 1],
+      [128728, 1],
+      [128736, 1],
+      [128737, 1],
+      [128738, 1],
+      [128739, 1],
+      [128740, 1],
+      [128741, 1],
+      [128745, 1],
+      [128752, 1],
+      [128755, 1],
+      [129673, 1],
+      [129674, 1],
+      [129678, 1],
+      [129679, 1],
+      [129726, 1],
+      [129734, 1],
+      [129736, 1],
+      [129741, 1],
+      [129756, 1],
+      [129759, 1],
+      [129769, 1],
+      [129770, 1],
+      [129775, 1]
+    ]);
+    module2.exports = { CODEPOINT_WIDTH_OVERRIDES };
+  }
+});
+
+// bun-compat-final.ts
+var bun_compat_final_exports = {};
+__export(bun_compat_final_exports, {
   stringWidth: () => stringWidth2,
   stripANSI: () => stripANSI,
   wrapAnsi: () => wrapAnsi2
 });
-module.exports = __toCommonJS(bun_compat_entry_exports);
+module.exports = __toCommonJS(bun_compat_final_exports);
 var import_emoji_regex = __toESM(require_emoji_regex(), 1);
 
 // node_modules/get-east-asian-width/lookup-data.js
@@ -762,101 +1065,106 @@ function wrapAnsi(string, columns, options) {
   return String(string).normalize().replaceAll("\r\n", "\n").split("\n").map((line) => exec(expandTabs(line), columns, options)).join("\n");
 }
 
-// bun-compat-entry.ts
-var _segmenter = null;
-function getGraphemeSegmenter() {
-  if (!_segmenter) _segmenter = new Intl.Segmenter(void 0, { granularity: "grapheme" });
-  return _segmenter;
+// bun-compat-final.ts
+var OV = require_width_overrides().CODEPOINT_WIDTH_OVERRIDES;
+var _s = null;
+function seg() {
+  if (!_s) _s = new Intl.Segmenter(void 0, { granularity: "grapheme" });
+  return _s;
 }
-var EMOJI_REGEX = (0, import_emoji_regex.default)();
-function needsSegmentation(str) {
-  for (const char of str) {
-    const cp = char.codePointAt(0);
-    if (cp >= 127744 && cp <= 129791) return true;
-    if (cp >= 9728 && cp <= 10175) return true;
-    if (cp >= 127462 && cp <= 127487) return true;
-    if (cp >= 65024 && cp <= 65039) return true;
-    if (cp === 8205) return true;
+var ER = (0, import_emoji_regex.default)();
+function needsSeg(s) {
+  for (const c of s) {
+    const p = c.codePointAt(0);
+    if (p >= 127744 && p <= 129791 || p >= 9728 && p <= 10175 || p >= 127462 && p <= 127487 || p >= 65024 && p <= 65039 || p === 8205) return true;
   }
   return false;
 }
-function getEmojiWidth(grapheme) {
-  const first = grapheme.codePointAt(0);
-  if (first >= 127462 && first <= 127487) {
-    let count = 0;
-    for (const _ of grapheme) count++;
-    return count === 1 ? 1 : 2;
+function hasTextVS(g) {
+  for (const c of g) if (c.codePointAt(0) === 65038) return true;
+  return false;
+}
+function emojiW(g) {
+  if (hasTextVS(g)) return 1;
+  const f = g.codePointAt(0);
+  if (f >= 127462 && f <= 127487) {
+    let n = 0;
+    for (const _ of g) n++;
+    return n === 1 ? 1 : 2;
   }
-  if (grapheme.length === 2) {
-    const second = grapheme.codePointAt(1);
-    if (second === 65039 && (first >= 48 && first <= 57 || first === 35 || first === 42)) return 1;
+  if (g.length === 2) {
+    const s = g.codePointAt(1);
+    if (s === 65039 && (f >= 48 && f <= 57 || f === 35 || f === 42)) return 1;
   }
   return 2;
 }
-function isZeroWidth(codePoint) {
-  if (codePoint >= 32 && codePoint < 127) return false;
-  if (codePoint >= 160 && codePoint < 768) return codePoint === 173;
-  if (codePoint <= 31 || codePoint >= 127 && codePoint <= 159) return true;
-  if (codePoint >= 8203 && codePoint <= 8205 || codePoint === 65279 || codePoint >= 8288 && codePoint <= 8292) return true;
-  if (codePoint >= 65024 && codePoint <= 65039 || codePoint >= 917760 && codePoint <= 917999) return true;
-  if (codePoint >= 768 && codePoint <= 879 || codePoint >= 6832 && codePoint <= 6911 || codePoint >= 7616 && codePoint <= 7679 || codePoint >= 8400 && codePoint <= 8447 || codePoint >= 65056 && codePoint <= 65071) return true;
-  if (codePoint >= 2304 && codePoint <= 3407) {
-    const offset = codePoint & 127;
-    if (offset <= 3) return true;
-    if (offset >= 58 && offset <= 79) return true;
-    if (offset >= 81 && offset <= 87) return true;
-    if (offset >= 98 && offset <= 99) return true;
+function isZW(p) {
+  if (p >= 32 && p < 127) return false;
+  if (p >= 160 && p < 768) return p === 173;
+  if (p <= 31 || p >= 127 && p <= 159) return true;
+  if (p >= 8203 && p <= 8205 || p === 65279 || p >= 8288 && p <= 8292) return true;
+  if (p >= 65024 && p <= 65039 || p >= 917760 && p <= 917999) return true;
+  if (p >= 768 && p <= 879 || p >= 6832 && p <= 6911 || p >= 7616 && p <= 7679 || p >= 8400 && p <= 8447 || p >= 65056 && p <= 65071) return true;
+  if (p >= 2304 && p <= 3407) {
+    const o = p & 127;
+    if (o <= 3 || o >= 58 && o <= 79 || o >= 81 && o <= 87 || o >= 98 && o <= 99) return true;
   }
-  if (codePoint === 3633 || codePoint >= 3636 && codePoint <= 3642 || codePoint >= 3655 && codePoint <= 3662 || codePoint === 3761 || codePoint >= 3764 && codePoint <= 3772 || codePoint >= 3784 && codePoint <= 3789) return true;
-  if (codePoint >= 1536 && codePoint <= 1541 || codePoint === 1757 || codePoint === 1807 || codePoint === 2274) return true;
-  if (codePoint >= 55296 && codePoint <= 57343) return true;
-  if (codePoint >= 917504 && codePoint <= 917631) return true;
+  if (p === 3633 || p >= 3636 && p <= 3642 || p >= 3655 && p <= 3662 || p === 3761 || p >= 3764 && p <= 3772 || p >= 3784 && p <= 3789) return true;
+  if (p >= 1536 && p <= 1541 || p === 1757 || p === 1807 || p === 2274) return true;
+  if (p >= 55296 && p <= 57343) return true;
+  if (p >= 917504 && p <= 917631) return true;
   return false;
+}
+function cw(p) {
+  const o = OV.get(p);
+  if (o !== void 0) return o;
+  if (isZW(p)) return 0;
+  return eastAsianWidth(p, { ambiguousAsWide: false });
 }
 function stringWidth2(str) {
   if (typeof str !== "string" || str.length === 0) return 0;
-  let isPureAscii = true;
-  for (let i = 0; i < str.length; i++) {
-    if (str.charCodeAt(i) >= 127 || str.charCodeAt(i) === 27) {
-      isPureAscii = false;
-      break;
-    }
+  let a = true;
+  for (let i = 0; i < str.length; i++) if (str.charCodeAt(i) >= 127 || str.charCodeAt(i) === 27) {
+    a = false;
+    break;
   }
-  if (isPureAscii) {
-    let width2 = 0;
-    for (let i = 0; i < str.length; i++) {
-      if (str.charCodeAt(i) > 31) width2++;
-    }
-    return width2;
+  if (a) {
+    let w2 = 0;
+    for (let i = 0; i < str.length; i++) if (str.charCodeAt(i) > 31) w2++;
+    return w2;
   }
   if (str.includes("\x1B")) {
     str = stripAnsi(str);
-    if (str.length === 0) return 0;
+    if (!str.length) return 0;
   }
-  if (!needsSegmentation(str)) {
-    let width2 = 0;
-    for (const char of str) {
-      const cp = char.codePointAt(0);
-      if (!isZeroWidth(cp)) width2 += eastAsianWidth(cp, { ambiguousAsWide: false });
+  if (!needsSeg(str)) {
+    let w2 = 0;
+    for (const c of str) w2 += cw(c.codePointAt(0));
+    return w2;
+  }
+  let w = 0;
+  for (const { segment: g } of seg().segment(str)) {
+    if ([...g].length === 1) {
+      const o = OV.get(g.codePointAt(0));
+      if (o !== void 0) {
+        w += o;
+        continue;
+      }
     }
-    return width2;
-  }
-  let width = 0;
-  for (const { segment: grapheme } of getGraphemeSegmenter().segment(str)) {
-    EMOJI_REGEX.lastIndex = 0;
-    if (EMOJI_REGEX.test(grapheme)) {
-      width += getEmojiWidth(grapheme);
+    ER.lastIndex = 0;
+    if (ER.test(g)) {
+      w += emojiW(g);
       continue;
     }
-    for (const char of grapheme) {
-      const cp = char.codePointAt(0);
-      if (!isZeroWidth(cp)) {
-        width += eastAsianWidth(cp, { ambiguousAsWide: false });
+    for (const c of g) {
+      const p = c.codePointAt(0);
+      if (!isZW(p)) {
+        w += cw(p);
         break;
       }
     }
   }
-  return width;
+  return w;
 }
 var stripANSI = stripAnsi;
 var wrapAnsi2 = wrapAnsi;
