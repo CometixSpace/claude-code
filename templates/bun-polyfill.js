@@ -21,10 +21,7 @@ if (typeof globalThis.Bun === "undefined") {
       const ptyProc = terminal._bind(cmd, spawnArgs, {
         cwd: opts.cwd, env: opts.env,
       });
-      const exited = new Promise((resolve) => {
-        ptyProc.onExit(({ exitCode }) => resolve(exitCode ?? 1));
-      });
-      return {
+      const result = {
         pid: ptyProc.pid,
         unref: () => {},
         kill: (sig) => { try { ptyProc.kill(sig); } catch {} },
@@ -34,8 +31,16 @@ if (typeof globalThis.Bun === "undefined") {
           destroyed: false,
         },
         stdout: null, stderr: null,
-        exited, exitCode: null,
+        exited: null, exitCode: null, signalCode: null,
       };
+      result.exited = new Promise((resolve) => {
+        ptyProc.onExit(({ exitCode, signal }) => {
+          result.exitCode = exitCode ?? null;
+          result.signalCode = signal > 0 ? signal : null;
+          resolve(exitCode ?? 1);
+        });
+      });
+      return result;
     }
 
     const nodeOpts = {
@@ -73,12 +78,7 @@ if (typeof globalThis.Bun === "undefined") {
     }
 
     // exited promise
-    const exited = new Promise((resolve) => {
-      child.on("close", (code) => resolve(code ?? 1));
-      child.on("error", () => resolve(1));
-    });
-
-    return {
+    const result = {
       pid: child.pid,
       unref: () => child.unref(),
       kill: (sig) => child.kill(sig),
@@ -86,9 +86,19 @@ if (typeof globalThis.Bun === "undefined") {
       stdin: child.stdin,
       stdout,
       stderr: child.stderr,
-      exited,
+      exited: null,
       exitCode: null,
+      signalCode: null,
     };
+    result.exited = new Promise((resolve) => {
+      child.on("close", (code, signal) => {
+        result.exitCode = code ?? null;
+        result.signalCode = signal ?? null;
+        resolve(code ?? 1);
+      });
+      child.on("error", () => resolve(1));
+    });
+    return result;
   }
 
   // Bun.hash polyfill using wyhash-compatible behavior
@@ -208,6 +218,7 @@ if (typeof globalThis.Bun === "undefined") {
           try { this._pty?.write(typeof data === "string" ? data : data.toString()); } catch {}
         }
         kill(sig) { try { this._pty?.kill(sig); } catch {} }
+        close() { try { this._pty?.kill(); } catch {} this._pty = null; }
         get pid() { return this._pty?.pid; }
       }
       // Expose loadPty for spawn integration
