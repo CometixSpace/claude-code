@@ -87,7 +87,7 @@ function isHardcodedBuildPath(node) {
 export function astPatch(code) {
   const ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'script' });
   const replacements = [];
-  const stats = { p1Paths: 0, p1Requires: 0, p2: false, p3: 0, p5: false, p7: false, p8: false };
+  const stats = { p1Paths: 0, p1Requires: 0, p2: false, p3: 0, p5: false, p7: false, p8: false, p9: 0 };
 
   walk(ast, (node) => {
     // P1: fileURLToPath("file:///home/runner/...") → __filename
@@ -275,8 +275,26 @@ export function astPatch(code) {
     }
   });
 
-  const patched = applyReplacements(code, replacements);
-  return { code: patched, stats, replacementCount: replacements.length };
+  let patched = applyReplacements(code, replacements);
+
+  // P9: Rebrand npm package name for update/install commands
+  //
+  // The build-time constant PACKAGE_URL is inlined as "@anthropic-ai/claude-code"
+  // throughout the code. This affects `claude update`, install-type detection,
+  // and auto-updater — all of which run `npm install @anthropic-ai/claude-code`.
+  //
+  // Replace with @cometix/claude-code so updates pull from the correct registry.
+  // Safe because "@anthropic-ai/claude-code" only appears as PACKAGE_URL values
+  // and path detection strings, not in GitHub URLs (those use "anthropics/claude-code").
+  const P9_FROM = '@anthropic-ai/claude-code';
+  const P9_TO = '@cometix/claude-code';
+  const p9Count = patched.split(P9_FROM).length - 1;
+  if (p9Count > 0) {
+    patched = patched.replaceAll(P9_FROM, P9_TO);
+    stats.p9 = p9Count;
+  }
+
+  return { code: patched, stats, replacementCount: replacements.length + p9Count };
 }
 
 // ──────────────────────────────────────────────
@@ -303,6 +321,7 @@ export async function patchFile(inputPath, outputPath) {
   console.log(`[${s.p5 ? 'OK' : '! '}] P5: EMBEDDED_SEARCH_TOOLS guard ${s.p5 ? 'restored' : 'not found (may be Windows build)'}`);
   console.log(`[${s.p7 ? 'OK' : '! '}] P7: HttpsProxyAgent ${s.p7 ? 'exposed as globalThis.__HttpsProxyAgent' : 'not found'}`);
   console.log(`[${s.p8 ? 'OK' : '! '}] P8: AF_ shadow function ${s.p8 ? 'patched to prefer system bfs/ugrep' : 'not found'}`);
+  console.log(`[${s.p9 > 0 ? 'OK' : '! '}] P9: Package name ${s.p9 > 0 ? `rebranded (${s.p9} occurrences)` : 'no @anthropic-ai references found'}`);
 
   // AST validation
   try {
