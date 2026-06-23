@@ -43,17 +43,24 @@ export async function buildPlatformPackage({
   await chmod(join(outputDir, 'cli.js'), 0o755);
   console.log(`  [OK] cli.js`);
 
-  // 2. vendor/audio-capture
+  // 2. vendor/audio-capture + computer-use-swift + computer-use-input
   const vd = vendorDir(platform === 'android-arm64' ? 'linux-arm64' : platform);
+  const napiModules = [
+    'audio-capture',
+    'computer-use-swift',
+    'computer-use-input',
+  ];
   if (vd && extractDir) {
-    const src = join(extractDir, 'audio-capture.node');
-    try {
-      await stat(src);
-      const dest = join(outputDir, 'vendor', 'audio-capture', vd);
-      await mkdir(dest, { recursive: true });
-      await copyFile(src, join(dest, 'audio-capture.node'));
-      console.log(`  [OK] vendor/audio-capture/${vd}/`);
-    } catch {}
+    for (const mod of napiModules) {
+      const src = join(extractDir, `${mod}.node`);
+      try {
+        await stat(src);
+        const dest = join(outputDir, 'vendor', mod, vd);
+        await mkdir(dest, { recursive: true });
+        await copyFile(src, join(dest, `${mod}.node`));
+        console.log(`  [OK] vendor/${mod}/${vd}/`);
+      } catch {}
+    }
   }
 
   // 3. vendor/ripgrep
