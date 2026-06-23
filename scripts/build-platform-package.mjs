@@ -49,6 +49,8 @@ export async function buildPlatformPackage({
     'audio-capture',
     'computer-use-swift',
     'computer-use-input',
+    'image-processor',
+    'url-handler',
   ];
   if (vd && extractDir) {
     for (const mod of napiModules) {
