@@ -135,9 +135,14 @@ async function downloadSeccomp(tmpDir) {
     { encoding: 'utf8', timeout: 60_000 });
   const tgz = readdirSync(tmpDir).find(f => f.startsWith('anthropic-ai-sandbox-runtime-') && f.endsWith('.tgz'));
   if (!tgz) return null;
-  tarExtract(join(tmpDir, tgz), secDir, 1, ['*/dist/vendor/seccomp/*']);
-  const seccompDir = join(secDir, 'dist', 'vendor', 'seccomp');
-  try { await stat(seccompDir); return seccompDir; } catch { return null; }
+  // Try both paths: vendor/seccomp/ (v0.0.58+) and dist/vendor/seccomp/ (v0.0.57)
+  try { tarExtract(join(tmpDir, tgz), secDir, 1, ['*/vendor/seccomp/*']); } catch {}
+  const seccompDir = join(secDir, 'vendor', 'seccomp');
+  try { await stat(seccompDir); return seccompDir; } catch {}
+  // Fallback: older layout had dist/vendor/seccomp/
+  try { tarExtract(join(tmpDir, tgz), secDir, 1, ['*/dist/vendor/seccomp/*']); } catch {}
+  const seccompDirLegacy = join(secDir, 'dist', 'vendor', 'seccomp');
+  try { await stat(seccompDirLegacy); return seccompDirLegacy; } catch { return null; }
 }
 
 // ──────────────────────────────────────────────
