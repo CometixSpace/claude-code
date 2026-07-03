@@ -171,10 +171,33 @@ if (typeof globalThis.Bun === "undefined") {
     JSONL: { parseChunk: null },
 
     which: (cmd) => {
+      // Vendor directory lookup for bundled binaries.
+      // Restores the semantics of USE_BUILTIN_RIPGREP:
+      //   unset/1/true (default) → prefer vendor rg, fall back to system PATH
+      //   0/false                → skip vendor, system PATH only
+      // In Bun SEA mode, builtin rg lived inside the multicall binary via
+      // Bun.isStandaloneExecutable. After SEA extraction for Node.js, the
+      // embedded branch never fires, so vendor lookup happens here instead.
+      if (cmd === "rg" || cmd === "rg.exe") {
+        const useBuiltin = process.env.USE_BUILTIN_RIPGREP;
+        const disabled = useBuiltin !== undefined &&
+          ["0", "false", "no", "off"].includes(String(useBuiltin).toLowerCase().trim());
+        if (!disabled) {
+          try {
+            const path = require("path");
+            const fs = require("fs");
+            const archDir = process.arch + "-" + process.platform;
+            const bin = process.platform === "win32" ? "rg.exe" : "rg";
+            const vendorPath = path.join(__dirname, "vendor", "ripgrep", archDir, bin);
+            if (fs.existsSync(vendorPath)) return vendorPath;
+          } catch {}
+        }
+      }
+      // System PATH lookup (execFileSync avoids shell injection vs execSync)
       try {
-        return cp.execSync(
-          process.platform === "win32" ? `where ${cmd}` : `command -v ${cmd}`,
-          { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] }
+        const whichCmd = process.platform === "win32" ? "where" : "which";
+        return cp.execFileSync(whichCmd, [cmd],
+          { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"], timeout: 5000 }
         ).trim().split("\n")[0] || null;
       } catch { return null; }
     },

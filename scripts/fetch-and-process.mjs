@@ -28,7 +28,7 @@ const OUTPUT_PLATFORMS = [...SEA_PLATFORMS, 'android-arm64'];
 // android-arm64 reuses linux-arm64 cli.js
 const PLATFORM_ALIAS = { 'android-arm64': 'linux-arm64' };
 
-const DEFAULT_RG_VERSION = '14.1.1';
+const DEFAULT_RG_VERSION = '15.1.0';
 
 // ──────────────────────────────────────────────
 //  Download helpers
