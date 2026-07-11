@@ -215,7 +215,9 @@ jobs:
             if npm view "${PKG}@${VERSION}" version &>/dev/null 2>&1; then
               echo "  Already published, skipping"
             else
-              npx npm@latest publish "$tgz" --access public --provenance $TAG_FLAG || echo "  Failed (may need package init)"
+              # Use setup-node's bundled npm — npx npm@latest can miss the
+            # sigstore dependency required for --provenance.
+            npm publish "$tgz" --access public --provenance $TAG_FLAG || echo "  Failed (may need package init)"
             fi
           done
 
@@ -232,6 +234,8 @@ jobs:
           if npm view "@cometix/claude-code@${VERSION}" version &>/dev/null 2>&1; then
             echo "Already published, skipping"
           else
-            npx npm@latest publish "$TARBALL" --access public --provenance $TAG_FLAG
+            # Use setup-node's bundled npm — npx npm@latest can miss the
+            # sigstore dependency required for --provenance.
+            npm publish "$TARBALL" --access public --provenance $TAG_FLAG
             echo "Published @cometix/claude-code@${VERSION}"
           fi
