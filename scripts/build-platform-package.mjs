@@ -1,4 +1,4 @@
-import { mkdir, writeFile, copyFile, stat, chmod } from 'node:fs/promises';
+import { mkdir, writeFile, copyFile, stat, chmod, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 // Platform key → vendor directory name mapping
@@ -63,6 +63,31 @@ export async function buildPlatformPackage({
         console.log(`  [OK] vendor/${mod}/${vd}/`);
       } catch {}
     }
+  }
+
+  // 2b. vendor/assets — BunFS static files (chart/hljs/mermaid, payload.template from v2.1.229+)
+  // Platform-independent; copy for musl too (vd is null there, NAPI is skipped).
+  if (extractDir) {
+    const skip = new Set(['cli.js']);
+    for (const mod of napiModules) {
+      skip.add(`${mod}.js`);
+      skip.add(`${mod}.node`);
+    }
+    const assetDest = join(outputDir, 'vendor', 'assets');
+    let copied = 0;
+    try {
+      for (const name of await readdir(extractDir)) {
+        if (skip.has(name) || name.startsWith('.')) continue;
+        const src = join(extractDir, name);
+        try {
+          if (!(await stat(src)).isFile()) continue;
+          await mkdir(assetDest, { recursive: true });
+          await copyFile(src, join(assetDest, name));
+          copied++;
+        } catch {}
+      }
+    } catch {}
+    if (copied) console.log(`  [OK] vendor/assets/ (${copied} files)`);
   }
 
   // 3. vendor/ripgrep

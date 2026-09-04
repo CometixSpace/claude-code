@@ -87,7 +87,7 @@ function isHardcodedBuildPath(node) {
 export function astPatch(code) {
   const ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'script' });
   const replacements = [];
-  const stats = { p1Paths: 0, p1Requires: 0, p2: false, p3: 0, p5: false, p7: false, p8: false, p9: 0 };
+  const stats = { p1Paths: 0, p1Requires: 0, p2: false, p3: 0, p5: false, p7: false, p8: false, p9: 0, p10: 0 };
 
   walk(ast, (node) => {
     // P1: fileURLToPath("file:///home/runner/...") → __filename
@@ -148,6 +148,34 @@ export function astPatch(code) {
       replacements.push({ start: node.start, end: node.end, replacement: vendorRequire });
       stats.p3++;
       return;
+    }
+
+    // P10: "/$bunfs/root/<asset>" literals → vendor/assets/<asset>
+    //
+    // Artifact runtimes (chart/hljs/mermaid) and the v2.1.229+ design-canvas
+    // payload are embedded as BunFS files and loaded via fs.readFile, not
+    // require(). P3 only rewrites require("/$bunfs/root/*.node"); these
+    // string constants would otherwise stay as absolute BunFS paths that
+    // do not exist under Node.js.
+    //
+    // The loaders do `path.isAbsolute(p) ? p : path.join(ciBuildDir, p)`,
+    // so rewriting the constant to an absolute __dirname-relative path
+    // makes isAbsolute true and skips the leftover CI fallback.
+    // .node paths are left to P3.
+    if (node.type === 'Literal' &&
+        typeof node.value === 'string' &&
+        node.value.startsWith('/$bunfs/root/') &&
+        !node.value.endsWith('.node')) {
+      const fileName = node.value.slice('/$bunfs/root/'.length);
+      if (fileName && !fileName.includes('/') && !fileName.includes('\\')) {
+        replacements.push({
+          start: node.start,
+          end: node.end,
+          replacement: `require("path").join(__dirname,"vendor","assets",${JSON.stringify(fileName)})`,
+        });
+        stats.p10++;
+        return;
+      }
     }
 
     // P5: Restore isInBundledMode / hasEmbeddedSearchTools guard
@@ -322,6 +350,7 @@ export async function patchFile(inputPath, outputPath) {
   console.log(`[${s.p7 ? 'OK' : '! '}] P7: HttpsProxyAgent ${s.p7 ? 'exposed as globalThis.__HttpsProxyAgent' : 'not found'}`);
   console.log(`[${s.p8 ? 'OK' : '! '}] P8: AF_ shadow function ${s.p8 ? 'patched to prefer system bfs/ugrep' : 'not found'}`);
   console.log(`[${s.p9 > 0 ? 'OK' : '! '}] P9: Package name ${s.p9 > 0 ? `rebranded (${s.p9} occurrences)` : 'no @anthropic-ai references found'}`);
+  console.log(`[${s.p10 > 0 ? 'OK' : '--'}] P10: Patched ${s.p10} BunFS asset path${s.p10 === 1 ? '' : 's'} (chart/hljs/mermaid/payload)`);
 
   // AST validation
   try {

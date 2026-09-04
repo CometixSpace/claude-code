@@ -28,6 +28,7 @@ npm install -g @cometix/claude-code
 | P6 | Bun polyfill shim injection (global Bun API stubs) |
 | P7 | `HttpsProxyAgent` exposed on `globalThis` for Node.js ws proxy support |
 | P8 | `AF_()` shadow function patched — resolves system `bfs`/`ugrep` via `which` instead of ARGV0 multicall |
+| P10 | `/$bunfs/root/{chart,hljs,mermaid,payload}` → `vendor/assets/` (fs.readFile artifacts; payload from v2.1.229+) |
 
 ## Search tools
 
@@ -56,6 +57,7 @@ EMBEDDED_SEARCH_TOOLS=true claude
 cli.js              Node.js entry point
 sdk-tools.d.ts      SDK type definitions
 vendor/
+├── assets/          Artifact runtimes (chart/hljs/mermaid) + design-canvas payload (v2.1.229+)
 ├── ripgrep/         Code search (6 platforms)
 ├── audio-capture/   Voice input (6 platforms)
 └── seccomp/         Linux sandbox (arm64 + x64)
