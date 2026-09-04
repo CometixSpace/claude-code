@@ -1,5 +1,5 @@
 import { mkdir, rm, writeFile, readFile, stat, copyFile } from 'node:fs/promises';
-import { readdirSync } from 'node:fs';
+import { readdirSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { extractBunSEA } from './bun-sea-extract.mjs';
@@ -54,7 +54,7 @@ function fetchJson(url) {
 
 async function downloadFile(url, destPath) {
   console.log(`  ↓ ${url.split('/').slice(-2).join('/')}`);
-  execFileSync('curl', ['-sL', '--fail', '-o', destPath, url], { timeout: 600_000 });
+  execFileSync('curl', ['-sL', '--fail', '--retry', '3', '--retry-delay', '2', '--retry-all-errors', '-o', destPath, url], { timeout: 600_000 });
   return (await stat(destPath)).size;
 }
 
@@ -219,7 +219,9 @@ export async function fetchAndProcess({
     }
 
     // Verify Node.js compatibility before patching
-    const cliSrc = join(extractDir, 'src', 'entrypoints', 'cli.js');
+    // v2.1.229+: embedded layout flattened, cli.js at extract root
+    const legacyCli = join(extractDir, 'src', 'entrypoints', 'cli.js');
+    const cliSrc = existsSync(legacyCli) ? legacyCli : join(extractDir, 'cli.js');
     const { compatible, fatal } = verifyNodeCompat(cliSrc);
     if (!compatible) {
       console.error(`  ✗ ${platform} — Node.js compat check failed (${fatal} fatal)`);
@@ -231,7 +233,7 @@ export async function fetchAndProcess({
     // Patch cli.js
     const patchedPath = join(tmpDir, 'patched', `${platform}.js`);
     await mkdir(join(tmpDir, 'patched'), { recursive: true });
-    await patchFile(join(extractDir, 'src', 'entrypoints', 'cli.js'), patchedPath);
+    await patchFile(cliSrc, patchedPath);
 
     extractions[platform] = { extractDir, patchedPath, binPath };
     console.log(`  ✓ ${platform}`);
