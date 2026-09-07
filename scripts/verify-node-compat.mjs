@@ -1,4 +1,10 @@
 import { readFileSync } from 'node:fs';
+import { BUNFS_ROOTS } from './bun-sea-extract.mjs';
+
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const ROOT_ALT = BUNFS_ROOTS.map(escapeRe).join('|');
+const BUNFS_ANY = new RegExp(ROOT_ALT, 'g');
+const BUNFS_IMPORT = new RegExp(`(?:from|import)\\s*\\(?\\s*"(?:${ROOT_ALT})`);
 
 // ──────────────────────────────────────────────
 //  Node.js compatibility verification
@@ -81,15 +87,51 @@ const CHECKS = [
   },
 ];
 
-export function verifyNodeCompat(cliJsPath) {
+// Split-ESM entries are ~20KB bootstraps with no CJS wrapper and barely any
+// require() calls, so the single-bundle checks above cannot apply. These are
+// the structural guarantees the directory-level patcher relies on instead.
+const ESM_CHECKS = [
+  {
+    id: 'bun-esm-entry',
+    description: 'Bun ESM entry header present',
+    test: (code) => code.startsWith('// @bun'),
+    severity: 'fatal',
+  },
+  {
+    id: 'bunfs-imports',
+    description: 'Chunk imports via the Bun virtual filesystem root',
+    test: (code) => BUNFS_IMPORT.test(code),
+    detail: (code) => `${(code.match(BUNFS_ANY) || []).length} references`,
+    severity: 'fatal',
+  },
+  {
+    id: 'version-string',
+    description: 'VERSION string present',
+    test: (code) => /VERSION:"(\d+\.\d+\.\d+)"/.test(code),
+    detail: (code) => code.match(/VERSION:"(\d+\.\d+\.\d+)"/)?.[1],
+    severity: 'fatal',
+  },
+  {
+    id: 'import-meta-require',
+    description: 'import.meta.require usage (Bun-only, patched)',
+    test: () => true,
+    detail: (code) => code.includes('import.meta.require') ? 'present in entry' : 'not in entry',
+    severity: 'info',
+  },
+];
+
+// Which checks apply is decided by version upstream (FIRST_SPLIT_ESM_VERSION
+// in fetch-and-process.mjs), not sniffed here: 2.1.242 is a bisected boundary.
+export function verifyNodeCompat(cliJsPath, splitEsm = false) {
   const code = readFileSync(cliJsPath, 'utf8');
+  const activeChecks = splitEsm ? ESM_CHECKS : CHECKS;
   const results = [];
   let fatal = 0;
   let warn = 0;
   let info = 0;
   let pass = 0;
 
-  for (const check of CHECKS) {
+  for (const check of activeChecks) {
     const ok = check.test(code);
     const detail = check.detail ? check.detail(code) : null;
     results.push({ ...check, ok, detail });
@@ -113,13 +155,15 @@ export function verifyNodeCompat(cliJsPath) {
 
 const isMain = process.argv[1]?.endsWith('verify-node-compat.mjs');
 if (isMain) {
-  const filePath = process.argv[2];
+  const args = process.argv.slice(2);
+  const splitEsm = args.includes('--split-esm');
+  const filePath = args.find((a) => !a.startsWith('--'));
   if (!filePath) {
-    console.error('Usage: node verify-node-compat.mjs <cli.js>');
+    console.error('Usage: node verify-node-compat.mjs <cli.js> [--split-esm]');
     process.exit(1);
   }
 
-  const { results, pass, warn, fatal, compatible, mode, guardCount } = verifyNodeCompat(filePath);
+  const { results, pass, warn, fatal, compatible, mode, guardCount } = verifyNodeCompat(filePath, splitEsm);
 
   console.log(`Node.js Compatibility Check: ${filePath}\n`);
 
@@ -141,7 +185,9 @@ if (isMain) {
     process.exit(1);
   }
 
-  if (mode === 'bun-only') {
+  if (splitEsm) {
+    console.log('\x1b[33mSplit-ESM build. Directory-level patching required.\x1b[0m');
+  } else if (mode === 'bun-only') {
     console.log('\x1b[33mBun-only build detected. Polyfill shim will be injected.\x1b[0m');
   } else {
     console.log('\x1b[32mDual-runtime build. Standard patches sufficient.\x1b[0m');

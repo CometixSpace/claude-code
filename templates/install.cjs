@@ -67,25 +67,32 @@ function main() {
   }
 
   const dest = __dirname;
-  const srcCli = path.join(pkgDir, 'cli.js');
-  const srcVendor = path.join(pkgDir, 'vendor');
 
-  // Copy cli.js
+  // Copy everything the platform package ships except its own package.json,
+  // which would overwrite the main package's manifest.
+  //
+  // On single-CJS builds that is cli.js plus vendor/. On split-ESM builds
+  // (v2.1.242+) it is also the ~1375 chunk-*.js modules and bun-polyfill.mjs,
+  // which cli.js imports through relative specifiers and therefore must sit
+  // in the same directory.
   try {
-    copyFileSync(srcCli, path.join(dest, 'cli.js'));
+    for (const entry of readdirSync(pkgDir)) {
+      if (entry === 'package.json') continue;
+      const src = path.join(pkgDir, entry);
+      const target = path.join(dest, entry);
+      if (statSync(src).isDirectory()) copyDirSync(src, target);
+      else copyFileSync(src, target);
+    }
   } catch (err) {
-    console.error(`[@cometix/claude-code postinstall] Failed to copy cli.js: ${err.message}`);
+    console.error(`[@cometix/claude-code postinstall] Failed to copy package files: ${err.message}`);
     return;
   }
 
-  // Copy vendor/
-  if (existsSync(srcVendor)) {
-    try {
-      copyDirSync(srcVendor, path.join(dest, 'vendor'));
-    } catch (err) {
-      console.error(`[@cometix/claude-code postinstall] Failed to copy vendor/: ${err.message}`);
-    }
-  }
+  // copyFileSync carries the source mode over, and npm may have stripped +x
+  // from the platform tarball, so restore it on the bin entry.
+  try {
+    require('fs').chmodSync(path.join(dest, 'cli.js'), 0o755);
+  } catch {}
 
   // Fix node-pty spawn-helper execute permission.
   // npm strips +x from non-bin files; without it pty.spawn() fails

@@ -15,6 +15,7 @@ const ALL_PLATFORMS = [
 
 export async function buildMainPackage({
   version,
+  splitEsm = false,
   wrapperDir,   // npm wrapper package dir (for sdk-tools.d.ts, LICENSE, README)
   outputDir,
 }) {
@@ -30,6 +31,9 @@ export async function buildMainPackage({
     name: '@cometix/claude-code',
     version,
     bin: { claude: 'cli.js' },
+    // Split builds ship ESM chunks; postinstall drops them next to cli.js,
+    // so the package has to be typed as a module for Node to load them.
+    ...(splitEsm ? { type: 'module' } : {}),
     engines: { node: '>=22.0.0' },
     scripts: { postinstall: 'node install.cjs' },
     author: 'Anthropic <support@anthropic.com>',
@@ -62,6 +66,9 @@ export async function buildMainPackage({
       'install.cjs',
       'bun-ink-compat.cjs',
       'sdk-tools.d.ts',
+      // Written by postinstall from the platform package. Listed so `npm pack`
+      // keeps them if the tree is ever staged before publishing.
+      ...(splitEsm ? ['chunk-*.js', 'bun-polyfill.mjs', 'src/', 'vendor/'] : []),
     ],
   };
 

@@ -18,8 +18,13 @@ const LOADERS = [
 ];
 const ENCODINGS = ['binary','latin1','utf8'];
 const FORMATS  = ['none','esm','cjs'];
-const BASE_PATH_POSIX   = '/$bunfs/';
-const BASE_PATH_WINDOWS = 'B:/~BUN/';
+export const BASE_PATH_POSIX   = '/$bunfs/';
+export const BASE_PATH_WINDOWS = 'B:/~BUN/';
+
+// Both virtual-filesystem roots Bun embeds. POSIX builds carry /$bunfs/root/,
+// Windows builds B:/~BUN/root/ — a rewriter that only knows the first leaves
+// every win32 path untouched.
+export const BUNFS_ROOTS = [BASE_PATH_POSIX, BASE_PATH_WINDOWS].map((b) => `${b}root/`);
 const BASE_PUBLIC_PATH  = 'root/';
 
 // ──────────────────────────────────────────────

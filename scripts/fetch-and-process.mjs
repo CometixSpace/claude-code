@@ -1,9 +1,11 @@
 import { mkdir, rm, writeFile, readFile, stat, copyFile } from 'node:fs/promises';
 import { readdirSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
+import semver from 'semver';
 import { extractBunSEA } from './bun-sea-extract.mjs';
 import { patchFile } from './node-compat-patch.mjs';
+import { patchSplitEsm, formatScanReport } from './esm-chunk-patch.mjs';
 import { buildPlatformPackage } from './build-platform-package.mjs';
 import { buildMainPackage } from './build-main-package.mjs';
 import { verifyNodeCompat } from './verify-node-compat.mjs';
@@ -29,6 +31,15 @@ const OUTPUT_PLATFORMS = [...SEA_PLATFORMS, 'android-arm64'];
 const PLATFORM_ALIAS = { 'android-arm64': 'linux-arm64' };
 
 const DEFAULT_RG_VERSION = '15.1.0';
+
+// How the SEA embeds the bundle changed here:
+//
+//   ≤ 2.1.241  one ~28MB CommonJS bundle, patched as a single cli.js
+//   ≥ 2.1.242  a ~20KB ESM entry plus ~1375 chunk-*.js modules
+//
+// Bisected against the official darwin binaries: 2.1.240 and 2.1.241 embed
+// 15 modules, 2.1.242 embeds 1391.
+const FIRST_SPLIT_ESM_VERSION = '2.1.242';
 
 // ──────────────────────────────────────────────
 //  Download helpers
@@ -194,7 +205,8 @@ export async function fetchAndProcess({
   }));
 
   // ── Step 3: Extract + patch each platform ──
-  console.log(`\n[3] Extracting and patching...`);
+  const splitEsm = semver.gte(version, FIRST_SPLIT_ESM_VERSION);
+  console.log(`\n[3] Extracting and patching (${splitEsm ? 'split ESM' : 'single CJS'})...`);
   const extractions = {};
 
   for (const platform of activeSEA) {
@@ -222,7 +234,7 @@ export async function fetchAndProcess({
     // v2.1.229+: embedded layout flattened, cli.js at extract root
     const legacyCli = join(extractDir, 'src', 'entrypoints', 'cli.js');
     const cliSrc = existsSync(legacyCli) ? legacyCli : join(extractDir, 'cli.js');
-    const { compatible, fatal } = verifyNodeCompat(cliSrc);
+    const { compatible, fatal } = verifyNodeCompat(cliSrc, splitEsm);
     if (!compatible) {
       console.error(`  ✗ ${platform} — Node.js compat check failed (${fatal} fatal)`);
       console.error('    Anthropic may have removed dual-runtime fallbacks. Aborting.');
@@ -230,12 +242,27 @@ export async function fetchAndProcess({
     }
     console.log(`  ✓ ${platform} — Node.js compat verified`);
 
-    // Patch cli.js
-    const patchedPath = join(tmpDir, 'patched', `${platform}.js`);
-    await mkdir(join(tmpDir, 'patched'), { recursive: true });
-    await patchFile(cliSrc, patchedPath);
-
-    extractions[platform] = { extractDir, patchedPath, binPath };
+    if (splitEsm) {
+      // v2.1.242+: the bundle is an ESM entry plus ~1375 chunks, patched in
+      // place across the whole extract dir. The entry stays where it is and
+      // the platform package ships the tree around it.
+      const entryRel = relative(extractDir, cliSrc);
+      const st = await patchSplitEsm({ extractDir, entryRel });
+      console.log(formatScanReport(st.sites));
+      if (st.sites.missing.length > 0) {
+        console.error(`  ✗ ${platform} — required patch sites missing: ${st.sites.missing.join(', ')}`);
+        process.exit(1);
+      }
+      console.log(`  ✓ ${platform} — ${st.specifiers.toLocaleString()} specifiers, ` +
+        `${st.literals} runtime paths, ${st.leftover} leftover`);
+      extractions[platform] = { extractDir, entryRel, binPath };
+    } else {
+      // Single-CJS: one file in, one patched file out.
+      const patchedPath = join(tmpDir, 'patched', `${platform}.js`);
+      await mkdir(join(tmpDir, 'patched'), { recursive: true });
+      await patchFile(cliSrc, patchedPath);
+      extractions[platform] = { extractDir, patchedPath, binPath };
+    }
     console.log(`  ✓ ${platform}`);
 
     // Clean up binary
@@ -267,7 +294,9 @@ export async function fetchAndProcess({
     await buildPlatformPackage({
       platform,
       version,
+      splitEsm,
       patchedCliPath: ext.patchedPath,
+      entryRel: ext.entryRel,
       extractDir: ext.extractDir,
       ripgrepDir,
       seccompDir,
@@ -277,7 +306,7 @@ export async function fetchAndProcess({
 
   // ── Step 6: Build main package ──
   console.log(`\n[6] Building main package...`);
-  await buildMainPackage({ version, wrapperDir, outputDir: join(outputDir, 'main') });
+  await buildMainPackage({ version, splitEsm, wrapperDir, outputDir: join(outputDir, 'main') });
 
   // ── Step 7: Cleanup ──
   console.log(`\n[7] Cleaning up...`);

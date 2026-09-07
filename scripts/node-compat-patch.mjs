@@ -84,65 +84,196 @@ function isHardcodedBuildPath(node) {
   return v.includes('/claude-cli-internal/') && v.startsWith('file:///');
 }
 
-export function astPatch(code) {
-  const ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'script' });
+// v2.1.242+ ships ESM chunks instead of one CJS bundle. The patch bodies
+// below are identical for both layouts — only the two CJS-only names they
+// inject have to change, since ESM modules have neither:
+//
+//   require    → globalThis.__ccNodeRequire  (exposed by the Bun polyfill)
+//   __dirname  → globalThis.__ccDirname()    (resolved from import.meta.url)
+//
+// The split-ESM patcher supplies both globals before any chunk body runs.
+function esmNames(sourceType) {
+  return sourceType === 'module'
+    ? { REQ: 'globalThis.__ccNodeRequire', DIR: 'globalThis.__ccDirname()' }
+    : { REQ: 'require', DIR: '__dirname' };
+}
+
+// ──────────────────────────────────────────────
+//  Site predicates
+//
+//  One matcher per patch, shared by astPatch (which rewrites) and the site
+//  scanner (which only locates). Keeping them here means a scan can never
+//  disagree with the rewrite: both ask the same question of the same AST,
+//  rather than a regex guessing at minified text that shifts between builds.
+// ──────────────────────────────────────────────
+
+export const MATCHERS = {
+  // fileURLToPath("file:///home/runner/...")
+  p1Paths: (node) =>
+    node.type === 'CallExpression' &&
+    node.callee?.type === 'MemberExpression' &&
+    node.callee.property?.name === 'fileURLToPath' &&
+    node.arguments?.length === 1 &&
+    isHardcodedBuildPath(node.arguments[0]),
+
+  // createRequire("file:///home/runner/...")
+  p1Requires: (node) =>
+    node.type === 'CallExpression' &&
+    node.callee?.type === 'MemberExpression' &&
+    node.callee.property?.name === 'createRequire' &&
+    node.arguments?.length === 1 &&
+    isHardcodedBuildPath(node.arguments[0]),
+
+  // var __dirname = "/home/runner/work/claude-cli-internal/..."
+  p1Dirnames: (node) =>
+    node.type === 'VariableDeclarator' &&
+    node.id?.type === 'Identifier' &&
+    node.id.name === '__dirname' &&
+    node.init?.type === 'Literal' &&
+    typeof node.init.value === 'string' &&
+    node.init.value.includes('/claude-cli-internal/'),
+
+  // if (typeof Bun > "u") throw Error("...Bun required...")
+  p2: (node) =>
+    node.type === 'IfStatement' &&
+    node.test?.type === 'BinaryExpression' &&
+    node.test.operator === '>' &&
+    node.test.left?.type === 'UnaryExpression' &&
+    node.test.left.operator === 'typeof' &&
+    node.test.left.argument?.name === 'Bun' &&
+    node.test.right?.value === 'u' &&
+    node.consequent?.type === 'ThrowStatement' &&
+    node.consequent.argument?.arguments?.[0]?.value?.includes('Bun required'),
+
+  // require("/$bunfs/root/xxx.node") — callee name varies once minified
+  p3: (node, sourceType) =>
+    node.type === 'CallExpression' &&
+    node.callee?.type === 'Identifier' &&
+    (sourceType === 'module' || node.callee.name === 'require') &&
+    node.arguments?.length === 1 &&
+    node.arguments[0].type === 'Literal' &&
+    typeof node.arguments[0].value === 'string' &&
+    node.arguments[0].value.startsWith('/$bunfs/root/') &&
+    node.arguments[0].value.endsWith('.node'),
+
+  // "/$bunfs/root/<asset>" constants for files read via fs, not imported:
+  // the artifact runtimes (*.min.js) and the design-canvas template (*.asset).
+  // Native modules are P3's; sibling chunks are module specifiers, which the
+  // split-ESM patcher rewrites before astPatch ever sees them.
+  p10: (node) => {
+    if (node.type !== 'Literal' || typeof node.value !== 'string') return false;
+    if (!node.value.startsWith('/$bunfs/root/')) return false;
+    const fileName = node.value.slice('/$bunfs/root/'.length);
+    if (!fileName || fileName.includes('/') || fileName.includes('\\')) return false;
+    return /\.(?:min\.js|asset)$/.test(fileName);
+  },
+
+  // The hasEmbeddedSearchTools() guard Bun inlined to isEnvTruthy("true")
+  p5: (node, _sourceType, code) => {
+    if (node.type !== 'FunctionDeclaration' || node.params.length !== 0) return false;
+    if (node.body?.type !== 'BlockStatement' || node.body.body.length < 2) return false;
+    const s1 = node.body.body[0];
+    return s1?.type === 'IfStatement' &&
+      s1.test?.type === 'UnaryExpression' &&
+      s1.test.operator === '!' &&
+      s1.test.argument?.type === 'CallExpression' &&
+      s1.test.argument.arguments?.length === 1 &&
+      s1.test.argument.arguments[0]?.type === 'Literal' &&
+      s1.test.argument.arguments[0]?.value === 'true' &&
+      s1.consequent?.type === 'ReturnStatement' &&
+      code.slice(s1.end, node.body.end).includes('CLAUDE_CODE_ENTRYPOINT');
+  },
+
+  // exports.HttpsProxyAgent = <Identifier>
+  p7: (node) =>
+    node.type === 'AssignmentExpression' &&
+    node.operator === '=' &&
+    node.left?.type === 'MemberExpression' &&
+    node.left.property?.type === 'Identifier' &&
+    node.left.property.name === 'HttpsProxyAgent' &&
+    node.right?.type === 'Identifier',
+
+  // AF_() — builds the bfs/ugrep shell wrapper around a multicall binary
+  p8: (node, _sourceType, code) => {
+    if (node.type !== 'FunctionDeclaration') return false;
+    if (node.params.length < 2 || node.params.length > 4) return false;
+    const body = code.slice(node.start, node.end);
+    return body.includes('ARGV0') && body.includes('_cc_bin') && body.includes('command');
+  },
+};
+
+// Walk once and report which patches have at least one match. Used by the
+// scanner; astPatch does its own walk because it also needs the offsets.
+export function findSites(code, sourceType = 'script') {
+  const ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType });
+  const hits = {};
+  walk(ast, (node) => {
+    for (const [id, match] of Object.entries(MATCHERS)) {
+      if (hits[id]) continue;
+      if (match(node, sourceType, code)) hits[id] = true;
+    }
+  });
+  return hits;
+}
+
+export function astPatch(code, sourceType = 'script') {
+  const ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType });
+  const { REQ, DIR } = esmNames(sourceType);
   const replacements = [];
-  const stats = { p1Paths: 0, p1Requires: 0, p2: false, p3: 0, p5: false, p7: false, p8: false, p9: 0, p10: 0 };
+  const stats = { p1Paths: 0, p1Requires: 0, p1Dirnames: 0, p2: false, p3: 0, p5: false, p7: false, p8: false, p9: 0, p10: 0 };
 
   walk(ast, (node) => {
     // P1: fileURLToPath("file:///home/runner/...") → __filename
-    if (node.type === 'CallExpression' &&
-        node.callee?.type === 'MemberExpression' &&
-        node.callee.property?.name === 'fileURLToPath' &&
-        node.arguments?.length === 1 &&
-        isHardcodedBuildPath(node.arguments[0])) {
+    if (MATCHERS.p1Paths(node)) {
       replacements.push({ start: node.start, end: node.end, replacement: '__filename' });
       stats.p1Paths++;
       return;
     }
 
     // P1: createRequire("file:///home/runner/...") → require
-    if (node.type === 'CallExpression' &&
-        node.callee?.type === 'MemberExpression' &&
-        node.callee.property?.name === 'createRequire' &&
-        node.arguments?.length === 1 &&
-        isHardcodedBuildPath(node.arguments[0])) {
+    if (MATCHERS.p1Requires(node)) {
       replacements.push({ start: node.start, end: node.end, replacement: 'require' });
       stats.p1Requires++;
       return;
     }
 
+    // P1: var __dirname = "/home/runner/work/claude-cli-internal/..." → runtime dir
+    //
+    // v2.1.242+ no longer wraps these in fileURLToPath(). Bundled CJS deps
+    // (grpc-js) declare a bare __dirname holding the build-machine path and
+    // then resolve real files against it:
+    //   includeDirs: [`${__dirname}/../../proto`]
+    // Left alone the lookup escapes the package, so point it at the module's
+    // own directory instead.
+    if (MATCHERS.p1Dirnames(node)) {
+      replacements.push({ start: node.init.start, end: node.init.end, replacement: DIR });
+      stats.p1Dirnames++;
+      return;
+    }
+
     // P2: if (typeof Bun > "u") throw Error("...Bun required...") → return null
-    if (node.type === 'IfStatement' &&
-        node.test?.type === 'BinaryExpression' &&
-        node.test.operator === '>' &&
-        node.test.left?.type === 'UnaryExpression' &&
-        node.test.left.operator === 'typeof' &&
-        node.test.left.argument?.name === 'Bun' &&
-        node.test.right?.value === 'u' &&
-        node.consequent?.type === 'ThrowStatement' &&
-        node.consequent.argument?.arguments?.[0]?.value?.includes('Bun required')) {
+    if (MATCHERS.p2(node)) {
       replacements.push({ start: node.start, end: node.end, replacement: 'if(typeof Bun>"u")return null;' });
       stats.p2 = true;
       return;
     }
 
     // P3: require("/$bunfs/root/xxx.node") → vendor fallback
-    if (node.type === 'CallExpression' &&
-        node.callee?.type === 'Identifier' &&
-        node.callee.name === 'require' &&
-        node.arguments?.length === 1 &&
-        node.arguments[0].type === 'Literal' &&
-        typeof node.arguments[0].value === 'string' &&
-        node.arguments[0].value.startsWith('/$bunfs/root/')) {
+    //
+    // Match on the ARGUMENT, not the callee name. In the single-CJS layout
+    // the callee is literally `require`, but v2.1.242+ hoists Bun's
+    // import.meta.require into a runtime chunk that 161 chunks re-import
+    // under their own minified aliases (`R`, `t`, `A`, …). The BunFS
+    // ".node" literal is the stable signal in both layouts.
+    if (MATCHERS.p3(node, sourceType)) {
       const modulePath = node.arguments[0].value;
       const moduleName = modulePath.replace('/$bunfs/root/', '');
       const baseName = moduleName.replace(/\.node$/, '');
       const vendorRequire = [
         '(function(){try{',
-        `var d=require("path").join(__dirname,"vendor","${baseName}",process.arch+"-"+process.platform,"${moduleName}");`,
-        'return require(d)',
-        `}catch{return require(${JSON.stringify(modulePath)})}`,
+        `var d=${REQ}("path").join(${DIR},"vendor","${baseName}",process.arch+"-"+process.platform,"${moduleName}");`,
+        `return ${REQ}(d)`,
+        `}catch{return ${REQ}(${JSON.stringify(modulePath)})}`,
         '})()'
       ].join('');
       replacements.push({ start: node.start, end: node.end, replacement: vendorRequire });
@@ -162,6 +293,10 @@ export function astPatch(code) {
     // so rewriting the constant to an absolute __dirname-relative path
     // makes isAbsolute true and skips the leftover CI fallback.
     // .node paths are left to P3.
+    //
+    // On split-ESM builds the same literals also appear as import specifiers,
+    // which the dedicated patcher rewrites to relative paths. Those are
+    // handled before astPatch runs, so anything still here is a runtime path.
     if (node.type === 'Literal' &&
         typeof node.value === 'string' &&
         node.value.startsWith('/$bunfs/root/') &&
@@ -171,7 +306,7 @@ export function astPatch(code) {
         replacements.push({
           start: node.start,
           end: node.end,
-          replacement: `require("path").join(__dirname,"vendor","assets",${JSON.stringify(fileName)})`,
+          replacement: `${REQ}("path").join(${DIR},"vendor","assets",${JSON.stringify(fileName)})`,
         });
         stats.p10++;
         return;
@@ -194,45 +329,29 @@ export function astPatch(code) {
     //      → not installed: DP()=false → fall back to Grep/Glob tools
     //
     //      Uses globalThis.__dpBinOk for memoization (which runs once).
-    if (node.type === 'FunctionDeclaration' &&
-        node.params.length === 0 &&
-        node.body?.type === 'BlockStatement' &&
-        node.body.body.length >= 2) {
+    if (MATCHERS.p5(node, sourceType, code)) {
       const s1 = node.body.body[0];
 
-      if (s1?.type === 'IfStatement' &&
-          s1.test?.type === 'UnaryExpression' &&
-          s1.test.operator === '!' &&
-          s1.test.argument?.type === 'CallExpression' &&
-          s1.test.argument.arguments?.length === 1 &&
-          s1.test.argument.arguments[0]?.type === 'Literal' &&
-          s1.test.argument.arguments[0]?.value === 'true' &&
-          s1.consequent?.type === 'ReturnStatement') {
+      // P5a: restore env var check
+      const lit = s1.test.argument.arguments[0];
+      replacements.push({
+        start: lit.start,
+        end: lit.end,
+        replacement: 'process.env.EMBEDDED_SEARCH_TOOLS',
+      });
 
-        const restSrc = code.slice(s1.end, node.body.end);
-        if (restSrc.includes('CLAUDE_CODE_ENTRYPOINT')) {
-          // P5a: restore env var check
-          const lit = s1.test.argument.arguments[0];
-          replacements.push({
-            start: lit.start,
-            end: lit.end,
-            replacement: 'process.env.EMBEDDED_SEARCH_TOOLS',
-          });
+      // P5b: inject binary availability check after the env-check if-statement
+      // Uses "which" on unix, "where" on windows. If both bfs+ugrep are
+      // found, shadow mode proceeds; otherwise DP() returns false → Tool mode.
+      const binCheck = `if(typeof globalThis.__dpBinOk>"u"){try{let _wc=process.platform==="win32"?"where":"which";${REQ}("child_process").execFileSync(_wc,["bfs"],{encoding:"utf8",timeout:2e3});${REQ}("child_process").execFileSync(_wc,["ugrep"],{encoding:"utf8",timeout:2e3});globalThis.__dpBinOk=!0}catch{globalThis.__dpBinOk=!1}}if(!globalThis.__dpBinOk)return!1;`;
+      replacements.push({
+        start: s1.end,
+        end: s1.end,
+        replacement: binCheck,
+      });
 
-          // P5b: inject binary availability check after the env-check if-statement
-          // Uses "which" on unix, "where" on windows. If both bfs+ugrep are
-          // found, shadow mode proceeds; otherwise DP() returns false → Tool mode.
-          const binCheck = 'if(typeof globalThis.__dpBinOk>"u"){try{let _wc=process.platform==="win32"?"where":"which";require("child_process").execFileSync(_wc,["bfs"],{encoding:"utf8",timeout:2e3});require("child_process").execFileSync(_wc,["ugrep"],{encoding:"utf8",timeout:2e3});globalThis.__dpBinOk=!0}catch{globalThis.__dpBinOk=!1}}if(!globalThis.__dpBinOk)return!1;';
-          replacements.push({
-            start: s1.end,
-            end: s1.end,
-            replacement: binCheck,
-          });
-
-          stats.p5 = true;
-          return;
-        }
-      }
+      stats.p5 = true;
+      return;
     }
 
     // P8: Fix AF_() shadow fallback path for Node.js
@@ -248,29 +367,20 @@ export function astPatch(code) {
     // AST pattern: FunctionDeclaration (2-4 params) whose body contains
     // 'ARGV0' and '_cc_bin'. Find the VariableDeclarator for M (the
     // fallback path) and inject resolution after it.
-    if (!stats.p8 &&
-        node.type === 'FunctionDeclaration' &&
-        node.params.length >= 2 && node.params.length <= 4) {
-      const body = code.slice(node.start, node.end);
-      if (body.includes('ARGV0') && body.includes('_cc_bin') && body.includes('command')) {
-        // Find `M=L?PV(f):f` or similar — the assignment that sets the fallback path.
-        // It's a ternary (ConditionalExpression) involving the windows check.
-        // We look for the variable M (3rd declarator in the `let` chain).
-        const fnName = node.id?.name || 'AF_';
-        // params[1] = _ (target binary name). May be Identifier or AssignmentPattern (default param)
-        const p1 = node.params[1];
-        const paramTarget = p1?.name ?? p1?.left?.name; // _ = "bfs" or "ugrep"
+    if (!stats.p8 && MATCHERS.p8(node, sourceType, code)) {
+      // params[1] = _ (target binary name). May be Identifier or AssignmentPattern (default param)
+      const p1 = node.params[1];
+      const paramTarget = p1?.name ?? p1?.left?.name; // _ = "bfs" or "ugrep"
 
-        // Inject before the `return[` statement that builds the shell function array.
-        // The return statement is always present and unique within AF_.
-        // We insert a try/catch that resolves the system binary via `which`
-        // and overwrites M (the fallback path variable).
-        const returnIdx = code.indexOf('return[', node.start);
-        if (returnIdx !== -1 && returnIdx < node.end) {
-          const injection = `try{let _wc=process.platform==="win32"?"where":"which",_w=require("child_process").execFileSync(_wc,[${paramTarget}],{encoding:"utf8",timeout:2e3}).trim();if(_w&&require("fs").existsSync(_w))M=_w}catch{}`;
-          replacements.push({ start: returnIdx, end: returnIdx, replacement: injection });
-          stats.p8 = true;
-        }
+      // Inject before the `return[` statement that builds the shell function array.
+      // The return statement is always present and unique within AF_.
+      // We insert a try/catch that resolves the system binary via `which`
+      // and overwrites M (the fallback path variable).
+      const returnIdx = code.indexOf('return[', node.start);
+      if (returnIdx !== -1 && returnIdx < node.end) {
+        const injection = `try{let _wc=process.platform==="win32"?"where":"which",_w=${REQ}("child_process").execFileSync(_wc,[${paramTarget}],{encoding:"utf8",timeout:2e3}).trim();if(_w&&${REQ}("fs").existsSync(_w))M=_w}catch{}`;
+        replacements.push({ start: returnIdx, end: returnIdx, replacement: injection });
+        stats.p8 = true;
       }
     }
 
@@ -285,13 +395,7 @@ export function astPatch(code) {
     //   where the RHS is the class reference
     //
     // Fix: append globalThis.__HttpsProxyAgent = <Identifier> after the assignment
-    if (!stats.p7 &&
-        node.type === 'AssignmentExpression' &&
-        node.operator === '=' &&
-        node.left?.type === 'MemberExpression' &&
-        node.left.property?.type === 'Identifier' &&
-        node.left.property.name === 'HttpsProxyAgent' &&
-        node.right?.type === 'Identifier') {
+    if (!stats.p7 && MATCHERS.p7(node)) {
       const className = node.right.name;
       replacements.push({
         start: node.end,
@@ -343,7 +447,7 @@ export async function patchFile(inputPath, outputPath) {
   code = result.code;
 
   const s = result.stats;
-  console.log(`[OK] P1: Patched ${s.p1Paths} fileURLToPath + ${s.p1Requires} createRequire`);
+  console.log(`[OK] P1: Patched ${s.p1Paths} fileURLToPath + ${s.p1Requires} createRequire + ${s.p1Dirnames} __dirname`);
   console.log(`[${s.p2 ? 'OK' : '--'}] P2: Bun.Transpiler guard ${s.p2 ? 'patched' : 'not found (polyfill handles this)'}`);
   console.log(`[${s.p3 > 0 ? 'OK' : '! '}] P3: Patched ${s.p3} $bunfs require paths`);
   console.log(`[${s.p5 ? 'OK' : '! '}] P5: EMBEDDED_SEARCH_TOOLS guard ${s.p5 ? 'restored' : 'not found (may be Windows build)'}`);

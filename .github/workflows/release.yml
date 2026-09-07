@@ -73,14 +73,18 @@ jobs:
           # Copy main package to temp dir for verification
           cp -r "$DIST/main" "$VERIFY"
 
-          # Simulate postinstall with linux-x64 platform package
-          cp "$DIST/packages/linux-x64/cli.js" "$VERIFY/cli.js"
-          cp -r "$DIST/packages/linux-x64/vendor" "$VERIFY/vendor"
+          # Simulate postinstall with the linux-x64 platform package. Copy
+          # everything but its package.json, which would overwrite the main
+          # manifest — on split-ESM builds that also brings the chunk tree,
+          # without which cli.js cannot resolve a single import.
+          find "$DIST/packages/linux-x64" -maxdepth 1 -mindepth 1 \
+            ! -name package.json -exec cp -r {} "$VERIFY/" \;
 
           cd "$VERIFY"
           npm install --omit=optional --no-audit --no-fund
           node cli.js --version
           node cli.js --help | head -5
+          node cli.js mcp list
 
           rm -rf "$VERIFY"
 

@@ -9,17 +9,56 @@ function vendorDir(platformKey) {
   return `${parts[1]}-${parts[0]}`;
 }
 
+// Static assets the code opens with fs.readFile rather than importing:
+// bundled artifact runtimes (*.min.js) and the design-canvas template
+// (*.asset). They ship under vendor/assets/ on every platform.
+const ASSET_RE = /\.(?:min\.js|asset)$/;
+
+async function listAssetFiles(dir) {
+  try {
+    const entries = await readdir(dir, { withFileTypes: true });
+    return entries
+      .filter((e) => e.isFile() && !e.name.startsWith('.') && ASSET_RE.test(e.name))
+      .map((e) => e.name);
+  } catch {
+    return [];
+  }
+}
+
 // seccomp arch dir
 function seccompArch(platformKey) {
   if (!platformKey.startsWith('linux')) return null;
   return platformKey.includes('arm64') ? 'arm64' : 'x64';
 }
 
+// Split-ESM builds ship the whole module tree. Everything that is not a
+// native module or a static asset (both of which land under vendor/) belongs
+// next to the entry, keeping the "./chunk-x.js" specifiers valid.
+async function copyModuleTree(srcDir, destDir, skip) {
+  let copied = 0;
+  for (const entry of await readdir(srcDir, { withFileTypes: true })) {
+    if (entry.name.startsWith('.')) continue;
+    const src = join(srcDir, entry.name);
+    const dest = join(destDir, entry.name);
+    if (entry.isDirectory()) {
+      await mkdir(dest, { recursive: true });
+      copied += await copyModuleTree(src, dest, skip);
+    } else if (!skip.has(entry.name)) {
+      await mkdir(destDir, { recursive: true });
+      await copyFile(src, dest);
+      copied++;
+    }
+  }
+  return copied;
+}
+
 export async function buildPlatformPackage({
   platform,           // e.g. "darwin-arm64"
   version,
-  patchedCliPath,     // path to patched cli.js
-  extractDir,         // SEA extract dir (for audio-capture.node)
+  splitEsm = false,   // v2.1.242+: ESM entry plus ~1375 sibling chunks
+  patchedCliPath,     // single-CJS builds: path to the patched cli.js
+  entryRel,           // split-ESM builds: entry path relative to extractDir
+  extractDir,         // SEA extract dir (native modules, assets, chunks)
   ripgrepDir,         // ripgrep binaries root
   seccompDir,         // seccomp binaries root (or null)
   outputDir,          // output directory for this platform package
@@ -38,13 +77,6 @@ export async function buildPlatformPackage({
     os = parts[0]; cpu = parts[1];
   }
 
-  // 1. Copy patched cli.js
-  await copyFile(patchedCliPath, join(outputDir, 'cli.js'));
-  await chmod(join(outputDir, 'cli.js'), 0o755);
-  console.log(`  [OK] cli.js`);
-
-  // 2. vendor/audio-capture + computer-use-swift + computer-use-input
-  const vd = vendorDir(platform === 'android-arm64' ? 'linux-arm64' : platform);
   const napiModules = [
     'audio-capture',
     'computer-use-swift',
@@ -52,6 +84,24 @@ export async function buildPlatformPackage({
     'image-processor',
     'url-handler',
   ];
+
+  // 1. Entry point (+ the rest of the module tree on split builds)
+  if (splitEsm) {
+    // Native modules and assets are copied into vendor/ below; the patched
+    // code resolves them from there, so they must not also sit at the root.
+    const skip = new Set(napiModules.map((m) => `${m}.node`));
+    for (const asset of await listAssetFiles(extractDir)) skip.add(asset);
+    const copied = await copyModuleTree(extractDir, outputDir, skip);
+    await chmod(join(outputDir, entryRel), 0o755);
+    console.log(`  [OK] module tree (${copied} files, entry ${entryRel})`);
+  } else {
+    await copyFile(patchedCliPath, join(outputDir, 'cli.js'));
+    await chmod(join(outputDir, 'cli.js'), 0o755);
+    console.log(`  [OK] cli.js`);
+  }
+
+  // 2. vendor/audio-capture + computer-use-swift + computer-use-input
+  const vd = vendorDir(platform === 'android-arm64' ? 'linux-arm64' : platform);
   if (vd && extractDir) {
     for (const mod of napiModules) {
       const src = join(extractDir, `${mod}.node`);
@@ -65,28 +115,20 @@ export async function buildPlatformPackage({
     }
   }
 
-  // 2b. vendor/assets — BunFS static files (chart/hljs/mermaid, payload.template from v2.1.229+)
-  // Platform-independent; copy for musl too (vd is null there, NAPI is skipped).
+  // 2b. vendor/assets — BunFS static files read via fs.readFile, not import:
+  // the artifact runtimes (chart/hljs/mermaid) and, from v2.1.229+, the
+  // design-canvas payload template. Platform-independent, so musl gets them
+  // too even though vd is null there and the NAPI copy above is skipped.
   if (extractDir) {
-    const skip = new Set(['cli.js']);
-    for (const mod of napiModules) {
-      skip.add(`${mod}.js`);
-      skip.add(`${mod}.node`);
-    }
     const assetDest = join(outputDir, 'vendor', 'assets');
     let copied = 0;
-    try {
-      for (const name of await readdir(extractDir)) {
-        if (skip.has(name) || name.startsWith('.')) continue;
-        const src = join(extractDir, name);
-        try {
-          if (!(await stat(src)).isFile()) continue;
-          await mkdir(assetDest, { recursive: true });
-          await copyFile(src, join(assetDest, name));
-          copied++;
-        } catch {}
-      }
-    } catch {}
+    for (const name of await listAssetFiles(extractDir)) {
+      try {
+        await mkdir(assetDest, { recursive: true });
+        await copyFile(join(extractDir, name), join(assetDest, name));
+        copied++;
+      } catch {}
+    }
     if (copied) console.log(`  [OK] vendor/assets/ (${copied} files)`);
   }
 
