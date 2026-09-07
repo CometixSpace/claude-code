@@ -215,18 +215,28 @@ export async function fetchAndProcess({
     const binPath = join(tmpDir, 'bins', platform, info.binary);
     const extractDir = join(tmpDir, 'extract', platform);
 
-    const result = await extractBunSEA(binPath);
     await mkdir(extractDir, { recursive: true });
-    for (let idx = 0; idx < result.modules.length; idx++) {
-      const mod = result.modules[idx];
-      let name = mod.name;
-      if (name.startsWith(result.basePath)) name = name.slice(result.basePath.length);
-      if (name.startsWith('root/')) name = name.slice(5);
-      if (idx === result.entryPointId) name = name.replace(/\.[^.]+$/, '') + '.' + mod.loader;
-      if (mod.contents?.length > 0) {
-        const outPath = join(extractDir, name);
-        await mkdir(join(outPath, '..'), { recursive: true });
-        await writeFile(outPath, mod.contents);
+    {
+      // Scoped so the parsed SEA goes out of scope before patching starts.
+      // Every module's contents is a view into the same section buffer — 228MB
+      // on 2.1.242 — so holding the result across the patch phase keeps that
+      // buffer alive for the whole platform, and eight of those overlap.
+      const result = await extractBunSEA(binPath);
+      for (let idx = 0; idx < result.modules.length; idx++) {
+        const mod = result.modules[idx];
+        let name = mod.name;
+        if (name.startsWith(result.basePath)) name = name.slice(result.basePath.length);
+        if (name.startsWith('root/')) name = name.slice(5);
+        if (idx === result.entryPointId) name = name.replace(/\.[^.]+$/, '') + '.' + mod.loader;
+        if (mod.contents?.length > 0) {
+          const outPath = join(extractDir, name);
+          await mkdir(join(outPath, '..'), { recursive: true });
+          await writeFile(outPath, mod.contents);
+        }
+        // Drop the slice as we go; the section buffer cannot be freed while
+        // any view into it is still reachable.
+        mod.contents = null;
+        mod.sourcemap = null;
       }
     }
 

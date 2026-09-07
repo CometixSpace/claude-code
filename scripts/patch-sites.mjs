@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { availableParallelism } from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
@@ -142,15 +142,20 @@ export function scanSources(fileMap, sourceType = 'module') {
   const found = emptyResult();
   for (const [rel, code] of Object.entries(fileMap)) {
     if (!mayContainPatchSite(code)) continue;
-    let hits;
-    try {
-      hits = findSites(code, sourceType);
-    } catch {
-      continue; // unparseable files cannot hold a patch site
-    }
-    for (const id of siteIdsFor(hits)) found.get(id).push(rel);
+    for (const id of siteIdsIn(code, sourceType)) found.get(id).push(rel);
   }
   return finish(found);
+}
+
+// Parse, collect, drop. The AST of a 7MB minified chunk runs to millions of
+// nodes, so it must not outlive the walk — holding several at once across
+// eight platforms is what exhausts the heap.
+function siteIdsIn(code, sourceType) {
+  try {
+    return siteIdsFor(findSites(code, sourceType));
+  } catch {
+    return []; // unparseable files cannot hold a patch site
+  }
 }
 
 function finish(found) {
@@ -164,48 +169,51 @@ function finish(found) {
 // tree is small enough that spawning workers would cost more than it saves.
 export async function scanPatchSites(extractDir, files, {
   sourceType = 'module',
-  concurrency = Math.max(1, Math.min(8, availableParallelism() - 1)),
+  concurrency = Math.max(1, Math.min(4, availableParallelism() - 1)),
 } = {}) {
-  // Pass 1: substring filter, cheap enough to do inline.
+  // Pass 1: substring filter. Files are read one at a time and dropped —
+  // the tree is ~40MB, and every platform in a release run walks its own copy.
   const candidates = [];
   for (const rel of files) {
-    const code = await readFile(join(extractDir, rel), 'utf8');
-    if (mayContainPatchSite(code)) candidates.push(rel);
+    if (mayContainPatchSite(await readFile(join(extractDir, rel), 'utf8'))) {
+      candidates.push({ rel, size: (await stat(join(extractDir, rel))).size });
+    }
   }
-
   if (candidates.length === 0) return finish(emptyResult());
 
-  if (candidates.length < 8 || concurrency === 1) {
-    const map = {};
-    for (const rel of candidates) map[rel] = await readFile(join(extractDir, rel), 'utf8');
-    return scanSources(map, sourceType);
+  // Largest first, so the long poles start early rather than trailing a
+  // nearly-finished batch.
+  candidates.sort((a, b) => b.size - a.size);
+  const queue = candidates.map((c) => c.rel);
+  const found = emptyResult();
+
+  // Pass 2: AST walk. Below a handful of files the worker startup and the
+  // second module graph per thread cost more than the parsing they save.
+  if (queue.length < 4 || concurrency === 1) {
+    for (const rel of queue) {
+      const code = await readFile(join(extractDir, rel), 'utf8');
+      for (const id of siteIdsIn(code, sourceType)) found.get(id).push(rel);
+    }
+    for (const list of found.values()) list.sort();
+    return finish(found);
   }
 
-  // Pass 2: AST walk, spread across workers. Largest files first so the long
-  // poles start early instead of trailing a nearly-finished batch.
-  const sizes = await Promise.all(candidates.map(async (rel) => {
-    const { size } = await import('node:fs/promises').then((m) => m.stat(join(extractDir, rel)));
-    return { rel, size };
-  }));
-  sizes.sort((a, b) => b.size - a.size);
-  const queue = sizes.map((s) => s.rel);
-
-  const found = emptyResult();
   const workerPath = join(__dirname, 'patch-site-worker.mjs');
   let cursor = 0;
 
   await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, () =>
     new Promise((resolve, reject) => {
       const worker = new Worker(workerPath, { workerData: { extractDir, sourceType } });
+      const finishWorker = () => worker.terminate().then(resolve, resolve);
       const next = () => {
-        if (cursor >= queue.length) { worker.terminate(); resolve(); return; }
+        if (cursor >= queue.length) { finishWorker(); return; }
         worker.postMessage(queue[cursor++]);
       };
       worker.on('message', (msg) => {
         if (msg.hits) for (const id of siteIdsFor(msg.hits)) found.get(id).push(msg.rel);
         next();
       });
-      worker.on('error', reject);
+      worker.on('error', (err) => { worker.terminate().finally(() => reject(err)); });
       next();
     }),
   ));
