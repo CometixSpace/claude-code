@@ -212,18 +212,33 @@ jobs:
         run: |
           VERSION="${{ matrix.version }}"
           TAG_FLAG="${{ steps.publish-tag.outputs.tag }}"
+          FAILED=""
+          PUBLISHED=""
           for tgz in ./artifacts/cometix-claude-code-*-${VERSION}.tgz; do
             [ -f "$tgz" ] || continue
             PKG=$(basename "$tgz" | sed "s/-${VERSION}.tgz//" | sed 's/^cometix-/@cometix\//')
             echo "Publishing ${PKG}@${VERSION}..."
             if npm view "${PKG}@${VERSION}" version &>/dev/null 2>&1; then
               echo "  Already published, skipping"
-            else
-              # Use setup-node's bundled npm — npx npm@latest can miss the
+            # Use setup-node's bundled npm — npx npm@latest can miss the
             # sigstore dependency required for --provenance.
-            npm publish "$tgz" --access public --provenance $TAG_FLAG || echo "  Failed (may need package init)"
+            elif npm publish "$tgz" --access public --provenance $TAG_FLAG; then
+              PUBLISHED="$PUBLISHED $PKG"
+            else
+              # Keep going so one bad package cannot strand the rest, but
+              # remember it: a swallowed failure here used to leave the main
+              # package pointing at optional deps that were never published,
+              # with the job still green.
+              echo "  FAILED: ${PKG}@${VERSION}"
+              FAILED="$FAILED $PKG"
             fi
           done
+
+          if [ -n "$FAILED" ]; then
+            echo "::error::Platform packages failed to publish:$FAILED"
+            exit 1
+          fi
+          echo "Published:$PUBLISHED"
 
       - name: Publish main package
         run: |
