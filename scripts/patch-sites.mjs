@@ -76,8 +76,10 @@ export const PATCH_SITES = [
     marker: 'CLAUDE_CODE_ENTRYPOINT',
     // Only macOS/Linux builds inline the env read to isEnvTruthy("true").
     // Windows binaries keep `process.env.EMBEDDED_SEARCH_TOOLS` as written,
-    // which is what P5a restores — there the patch has nothing to do.
+    // which is what P5a restores — there the patch has nothing to do, and the
+    // marker keeps appearing because the guard itself is still present.
     expect: 'optional',
+    markerSurvivesUnpatched: true,
   },
   {
     id: 'P7-proxy-agent',
@@ -140,14 +142,24 @@ function siteIdsFor(hits) {
   return PATCH_SITES.filter((s) => hits[s.matcher]).map((s) => s.id);
 }
 
+// How many files carry each marker, so a marker that survives while its
+// predicate stops matching can be told apart from one that simply left.
+function countMarkers(code, tally) {
+  for (const marker of AST_MARKERS) {
+    if (code.includes(marker)) tally.set(marker, (tally.get(marker) ?? 0) + 1);
+  }
+}
+
 // Single-threaded scan. Exported for callers that already hold the sources.
 export function scanSources(fileMap, sourceType = 'module') {
   const found = emptyResult();
+  const markerHits = new Map();
   for (const [rel, code] of Object.entries(fileMap)) {
     if (!mayContainPatchSite(code)) continue;
+    countMarkers(code, markerHits);
     for (const id of siteIdsIn(code, sourceType)) found.get(id).push(rel);
   }
-  return finish(found);
+  return finish(found, markerHits);
 }
 
 // Parse, collect, drop. The AST of a 7MB minified chunk runs to millions of
@@ -161,11 +173,43 @@ function siteIdsIn(code, sourceType) {
   }
 }
 
-function finish(found) {
+// A marker that still appears while its predicate matches nothing is the
+// signature of an upstream reshape: the construct is present, but no longer
+// in the form the patch knows. P1 went through exactly that between 2.1.241
+// and 2.1.242 — fileURLToPath("file:///…") became a bare __dirname
+// assignment, and the fileURLToPath site legitimately dropped to zero only
+// because a sibling site picked the construct up.
+//
+// Reported for every site, including optional ones, since an optional site
+// falling silent is precisely the case that would otherwise slip through.
+function finish(found, markerHits = new Map()) {
   const missing = PATCH_SITES
     .filter((s) => s.expect === 'required' && found.get(s.id).length === 0)
     .map((s) => s.id);
-  return { found, missing };
+
+  const byMarker = new Map();
+  for (const site of PATCH_SITES) {
+    const list = byMarker.get(site.marker) ?? [];
+    list.push(site.id);
+    byMarker.set(site.marker, list);
+  }
+
+  // Only flag a marker when none of the sites sharing it matched — the
+  // construct moving between sibling sites is normal. Sites that legitimately
+  // see their marker without needing the patch opt out entirely.
+  const exempt = new Set(
+    PATCH_SITES.filter((s) => s.markerSurvivesUnpatched).map((s) => s.marker),
+  );
+  const stale = [];
+  for (const [marker, ids] of byMarker) {
+    if (exempt.has(marker)) continue;
+    const files = markerHits.get(marker) ?? 0;
+    if (files === 0) continue;
+    if (ids.some((id) => found.get(id).length > 0)) continue;
+    stale.push({ marker, files, sites: ids });
+  }
+
+  return { found, missing, stale };
 }
 
 // Parallel scan over a file list. Falls back to in-process scanning when the
@@ -174,15 +218,18 @@ export async function scanPatchSites(extractDir, files, {
   sourceType = 'module',
   concurrency = Math.max(1, Math.min(4, availableParallelism() - 1)),
 } = {}) {
-  // Pass 1: substring filter. Files are read one at a time and dropped —
-  // the tree is ~40MB, and every platform in a release run walks its own copy.
+  // Pass 1: substring filter, tallying markers on the way through. Files are
+  // read one at a time and dropped — the tree is ~40MB, and every platform in
+  // a release run walks its own copy.
   const candidates = [];
+  const markerHits = new Map();
   for (const rel of files) {
-    if (mayContainPatchSite(await readFile(join(extractDir, rel), 'utf8'))) {
-      candidates.push({ rel, size: (await stat(join(extractDir, rel))).size });
-    }
+    const code = await readFile(join(extractDir, rel), 'utf8');
+    if (!mayContainPatchSite(code)) continue;
+    countMarkers(code, markerHits);
+    candidates.push({ rel, size: (await stat(join(extractDir, rel))).size });
   }
-  if (candidates.length === 0) return finish(emptyResult());
+  if (candidates.length === 0) return finish(emptyResult(), markerHits);
 
   // Largest first, so the long poles start early rather than trailing a
   // nearly-finished batch.
@@ -198,7 +245,7 @@ export async function scanPatchSites(extractDir, files, {
       for (const id of siteIdsIn(code, sourceType)) found.get(id).push(rel);
     }
     for (const list of found.values()) list.sort();
-    return finish(found);
+    return finish(found, markerHits);
   }
 
   const workerPath = join(__dirname, 'patch-site-worker.mjs');
@@ -223,10 +270,10 @@ export async function scanPatchSites(extractDir, files, {
 
   // Worker completion order is nondeterministic; sort so reports are stable.
   for (const list of found.values()) list.sort();
-  return finish(found);
+  return finish(found, markerHits);
 }
 
-export function formatScanReport({ found, missing }) {
+export function formatScanReport({ found, missing, stale = [] }) {
   const lines = [];
   for (const site of PATCH_SITES) {
     const files = found.get(site.id);
@@ -235,6 +282,12 @@ export function formatScanReport({ found, missing }) {
       : files.length <= 2 ? files.join(', ') : `${files[0]} (+${files.length - 1} more)`;
     const mark = files.length > 0 ? 'OK' : site.expect === 'required' ? '! ' : '--';
     lines.push(`  [${mark}] ${site.id.padEnd(18)} ${String(files.length).padStart(4)} file(s)  ${where}`);
+  }
+  for (const { marker, files, sites } of stale) {
+    lines.push('');
+    lines.push(`  [??] ${JSON.stringify(marker)} still in ${files} file(s), but ` +
+      `${sites.join('/')} matched none`);
+    lines.push('       The construct is there in a shape the predicate no longer knows.');
   }
   if (missing.length > 0) {
     lines.push('');

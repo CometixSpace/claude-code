@@ -88,12 +88,17 @@ function findCommentHeaderEnd(code) {
 //  P1/P2/P3 AST-based patching
 // ──────────────────────────────────────────────
 
+// The checkout directory every official build bakes in, in either separator.
+// URL forms are always forward-slashed, but a bare Windows path is not:
+//   posix   /home/runner/work/claude-cli-internal/claude-cli-internal/...
+//   win32   D:\a\claude-cli-internal\claude-cli-internal\...
+const BUILD_DIR_RE = /[\\/]claude-cli-internal[\\/]/;
+
 function isHardcodedBuildPath(node) {
   if (node.type !== 'Literal' || typeof node.value !== 'string') return false;
-  const v = node.value;
   // Linux/macOS CI: file:///home/runner/work/claude-cli-internal/...
   // Windows CI:     file:///D:/a/claude-cli-internal/... (any drive letter)
-  return v.includes('/claude-cli-internal/') && v.startsWith('file:///');
+  return BUILD_DIR_RE.test(node.value) && node.value.startsWith('file:///');
 }
 
 // v2.1.242+ ships ESM chunks instead of one CJS bundle. The patch bodies
@@ -136,14 +141,15 @@ export const MATCHERS = {
     node.arguments?.length === 1 &&
     isHardcodedBuildPath(node.arguments[0]),
 
-  // var __dirname = "/home/runner/work/claude-cli-internal/..."
+  // var __dirname = "/home/runner/work/claude-cli-internal/..." — or its
+  // backslashed win32 equivalent, which the posix-only check used to miss
   p1Dirnames: (node) =>
     node.type === 'VariableDeclarator' &&
     node.id?.type === 'Identifier' &&
     node.id.name === '__dirname' &&
     node.init?.type === 'Literal' &&
     typeof node.init.value === 'string' &&
-    node.init.value.includes('/claude-cli-internal/'),
+    BUILD_DIR_RE.test(node.init.value),
 
   // if (typeof Bun > "u") throw Error("...Bun required...")
   p2: (node) =>
