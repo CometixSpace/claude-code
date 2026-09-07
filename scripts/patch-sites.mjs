@@ -74,7 +74,10 @@ export const PATCH_SITES = [
     matcher: 'p5',
     description: 'EMBEDDED_SEARCH_TOOLS guard inlined to a literal by the Bun build',
     marker: 'CLAUDE_CODE_ENTRYPOINT',
-    expect: 'required',
+    // Only macOS/Linux builds inline the env read to isEnvTruthy("true").
+    // Windows binaries keep `process.env.EMBEDDED_SEARCH_TOOLS` as written,
+    // which is what P5a restores — there the patch has nothing to do.
+    expect: 'optional',
   },
   {
     id: 'P7-proxy-agent',
