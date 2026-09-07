@@ -3,8 +3,20 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as acorn from 'acorn';
+import { BUNFS_ROOTS } from './bun-sea-extract.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// A BunFS path, or null if the literal is not one. POSIX builds embed
+// /$bunfs/root/, Windows builds B:/~BUN/root/ — matching only the first
+// leaves every win32 site undetected and unpatched.
+function bunfsTarget(value) {
+  if (typeof value !== 'string') return null;
+  for (const root of BUNFS_ROOTS) {
+    if (value.startsWith(root)) return value.slice(root.length);
+  }
+  return null;
+}
 
 // ──────────────────────────────────────────────
 //  AST helpers
@@ -145,25 +157,22 @@ export const MATCHERS = {
     node.consequent?.type === 'ThrowStatement' &&
     node.consequent.argument?.arguments?.[0]?.value?.includes('Bun required'),
 
-  // require("/$bunfs/root/xxx.node") — callee name varies once minified
-  p3: (node, sourceType) =>
-    node.type === 'CallExpression' &&
-    node.callee?.type === 'Identifier' &&
-    (sourceType === 'module' || node.callee.name === 'require') &&
-    node.arguments?.length === 1 &&
-    node.arguments[0].type === 'Literal' &&
-    typeof node.arguments[0].value === 'string' &&
-    node.arguments[0].value.startsWith('/$bunfs/root/') &&
-    node.arguments[0].value.endsWith('.node'),
+  // require("<bunfs>/xxx.node") — callee name varies once minified
+  p3: (node, sourceType) => {
+    if (node.type !== 'CallExpression' || node.callee?.type !== 'Identifier') return false;
+    if (sourceType !== 'module' && node.callee.name !== 'require') return false;
+    if (node.arguments?.length !== 1 || node.arguments[0].type !== 'Literal') return false;
+    const target = bunfsTarget(node.arguments[0].value);
+    return target !== null && target.endsWith('.node');
+  },
 
-  // "/$bunfs/root/<asset>" constants for files read via fs, not imported:
-  // the artifact runtimes (*.min.js) and the design-canvas template (*.asset).
+  // "<bunfs>/<asset>" constants for files read via fs, not imported: the
+  // artifact runtimes (*.min.js) and the design-canvas template (*.asset).
   // Native modules are P3's; sibling chunks are module specifiers, which the
   // split-ESM patcher rewrites before astPatch ever sees them.
   p10: (node) => {
-    if (node.type !== 'Literal' || typeof node.value !== 'string') return false;
-    if (!node.value.startsWith('/$bunfs/root/')) return false;
-    const fileName = node.value.slice('/$bunfs/root/'.length);
+    if (node.type !== 'Literal') return false;
+    const fileName = bunfsTarget(node.value);
     if (!fileName || fileName.includes('/') || fileName.includes('\\')) return false;
     return /\.(?:min\.js|asset)$/.test(fileName);
   },
@@ -267,7 +276,7 @@ export function astPatch(code, sourceType = 'script') {
     // ".node" literal is the stable signal in both layouts.
     if (MATCHERS.p3(node, sourceType)) {
       const modulePath = node.arguments[0].value;
-      const moduleName = modulePath.replace('/$bunfs/root/', '');
+      const moduleName = bunfsTarget(modulePath);
       const baseName = moduleName.replace(/\.node$/, '');
       const vendorRequire = [
         '(function(){try{',
@@ -297,20 +306,15 @@ export function astPatch(code, sourceType = 'script') {
     // On split-ESM builds the same literals also appear as import specifiers,
     // which the dedicated patcher rewrites to relative paths. Those are
     // handled before astPatch runs, so anything still here is a runtime path.
-    if (node.type === 'Literal' &&
-        typeof node.value === 'string' &&
-        node.value.startsWith('/$bunfs/root/') &&
-        !node.value.endsWith('.node')) {
-      const fileName = node.value.slice('/$bunfs/root/'.length);
-      if (fileName && !fileName.includes('/') && !fileName.includes('\\')) {
-        replacements.push({
-          start: node.start,
-          end: node.end,
-          replacement: `${REQ}("path").join(${DIR},"vendor","assets",${JSON.stringify(fileName)})`,
-        });
-        stats.p10++;
-        return;
-      }
+    if (MATCHERS.p10(node)) {
+      const fileName = bunfsTarget(node.value);
+      replacements.push({
+        start: node.start,
+        end: node.end,
+        replacement: `${REQ}("path").join(${DIR},"vendor","assets",${JSON.stringify(fileName)})`,
+      });
+      stats.p10++;
+      return;
     }
 
     // P5: Restore isInBundledMode / hasEmbeddedSearchTools guard
