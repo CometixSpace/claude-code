@@ -60,11 +60,6 @@ jobs:
       - run: npm ci
 
       - name: Build all packages
-        env:
-          # Split-ESM builds parse ~1375 chunks per platform on top of the
-          # native SEA reader holding a 300MB+ binary; the default heap is
-          # not sized for both at once.
-          NODE_OPTIONS: --max-old-space-size=6144
         run: |
           node scripts/fetch-and-process.mjs \
             --version "${{ matrix.version }}" \

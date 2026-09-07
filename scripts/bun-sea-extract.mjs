@@ -138,12 +138,26 @@ function parseModules(offsets, bunData) {
 //  Supports MachO (__BUN/__bun), PE (.bun), ELF (.bun)
 // ──────────────────────────────────────────────
 
-import { readFileSync } from 'node:fs';
+import { closeSync, openSync, readSync } from 'node:fs';
+
+// Only the first four bytes decide the format, and lief re-reads the file
+// itself. Slurping all of it — 345MB per platform on 2.1.242 — just to read
+// a magic number doubles peak memory for no gain.
+function readMagic(binaryPath) {
+  const head = Buffer.alloc(4);
+  const fd = openSync(binaryPath, 'r');
+  try {
+    readSync(fd, head, 0, 4, 0);
+  } finally {
+    closeSync(fd);
+  }
+  return head;
+}
 
 function findBunSection(binaryPath) {
   lief.logging.disable();
 
-  const rawBuf = readFileSync(binaryPath);
+  const rawBuf = readMagic(binaryPath);
   const magic = rawBuf.readUInt32LE(0);
   let binFormat, basePath;
 
