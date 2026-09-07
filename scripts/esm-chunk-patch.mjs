@@ -77,12 +77,28 @@ export function rewriteBunfsPaths(code, prefix) {
 //
 //  Bun exposes import.meta.require; Node does not. 2.1.242 hoists it into a
 //  single runtime chunk that re-exports it, so one rewrite reaches every
-//  consumer. Object.assign keeps require.resolve/cache on the wrapper.
+//  consumer.
+//
+//  Bun's require also honours its text loader: requiring a .md/.txt returns
+//  the file's CONTENT, not a module. v2.1.246 leans on that for the bundled
+//  skills — 164 prompt and template files pulled in at chunk top level:
+//
+//    var a = e("/$bunfs/root/anti-patterns-c1rmzbdk.md");
+//
+//  Node would compile the markdown as JS and throw, taking the whole chunk
+//  with it, so route those extensions through readFileSync instead.
+//  Object.assign keeps require.resolve/cache on the wrapper.
 // ──────────────────────────────────────────────
+
+const TEXT_LOADER_EXT = /\.(?:md|txt)$/;
 
 const REQUIRE_SHIM =
   'import{createRequire as __ccMakeRequire}from"module";' +
-  'const __ccRequire=__ccMakeRequire(import.meta.url);';
+  'import{readFileSync as __ccReadText}from"fs";' +
+  'const __ccRawRequire=__ccMakeRequire(import.meta.url);' +
+  'const __ccRequire=Object.assign((id)=>' +
+  `${TEXT_LOADER_EXT}.test(id)?__ccReadText(id,"utf8"):__ccRawRequire(id),` +
+  '__ccRawRequire);';
 
 function firstStatementStart(code) {
   const ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' });
