@@ -15,6 +15,52 @@ if (typeof globalThis.Bun === "undefined") {
   const BUN_FILE = Symbol.for("bun.polyfill.file");
 
   // ──────────────────────────────────────────────
+  // Bun.zstdDecompress / zstdDecompressSync
+  //
+  // Since 2.1.251 the embedded text assets ship zstd-framed — 101 of them on
+  // darwin — and the loader sniffs the magic rather than the file extension,
+  // so this is on the path for skill prompts and the artifact runtimes alike.
+  // Node's zstd is callback-style and lands in 22.15; Bun's async form
+  // resolves a promise, hence the wrapper.
+  // ──────────────────────────────────────────────
+  const zlib = require("zlib");
+
+  function zstdDecompressSync(data) {
+    if (typeof zlib.zstdDecompressSync !== "function") {
+      throw new Error("zstd requires Node.js >= 22.15");
+    }
+    return zlib.zstdDecompressSync(data);
+  }
+
+  function zstdDecompress(data) {
+    return new Promise((resolve, reject) => {
+      if (typeof zlib.zstdDecompress !== "function") {
+        reject(new Error("zstd requires Node.js >= 22.15"));
+        return;
+      }
+      zlib.zstdDecompress(data, (err, out) => (err ? reject(err) : resolve(out)));
+    });
+  }
+
+  // ──────────────────────────────────────────────
+  // Bun.TOML — reads ~/.codex/config.toml when importing Codex settings
+  //
+  // Parsing has to match TOML 1.0.0 rather than approximate it: the result
+  // becomes the user's imported mcpServers, hooks and permission mode, and a
+  // misparse there is silent. smol-toml is the spec-complete implementation;
+  // if it is missing, say so instead of returning a half-parsed object.
+  // ──────────────────────────────────────────────
+  function tomlParse(text) {
+    let parser;
+    try {
+      parser = require("smol-toml");
+    } catch {
+      throw new Error("Bun.TOML.parse requires the 'smol-toml' package");
+    }
+    return parser.parse(text);
+  }
+
+  // ──────────────────────────────────────────────
   // Bun.file — used as stdio target (bg-pty-host breadcrumb)
   // ──────────────────────────────────────────────
   function bunFile(path, opts = {}) {
@@ -187,6 +233,16 @@ if (typeof globalThis.Bun === "undefined") {
     const buf = h.digest();
     return Number(buf.readBigUInt64LE(0) & 0xFFFFFFFFn);
   }
+  // Bun.hash.xxHash64 — callers format it as a fixed-width 64-bit hex digest
+  // (`.toString(16).padStart(16,"0")`), so this has to return a BigInt rather
+  // than the 32-bit Number bunHash() yields. Only stability matters here: it
+  // keys a local cache, and nothing compares it against a real xxHash.
+  bunHash.xxHash64 = function xxHash64(data, seed) {
+    const str = typeof data === "string" ? data : String(data);
+    const h = crypto.createHash("sha256").update(str);
+    if (seed !== undefined) h.update(String(seed));
+    return h.digest().readBigUInt64LE(0);
+  };
   bunHash.toString = () => "function hash() { [native code] }";
 
   // Load Anthropic-compatible ink implementations (bundled from source)
@@ -208,54 +264,100 @@ if (typeof globalThis.Bun === "undefined") {
   }
 
   // ──────────────────────────────────────────────
+  // Bun socket wrapper — shared by Bun.listen and Bun.connect
+  //
+  // Bun hands its handlers a socket object rather than emitting events, so
+  // wrap the Node socket to match. Used on both sides: the two APIs differ
+  // only in who opens the connection.
+  // ──────────────────────────────────────────────
+  function wrapSocket(sock) {
+    return {
+      data: undefined,
+      write(data) {
+        const buf = typeof data === "string" ? Buffer.from(data, "utf8")
+          : Buffer.isBuffer(data) ? data
+          : Buffer.from(data);
+        if (sock.destroyed) return 0;
+        // Node already buffers when write() returns false; always report full
+        // acceptance to avoid caller-side double-buffer + re-write on drain.
+        sock.write(buf);
+        return buf.length;
+      },
+      end() {
+        try { sock.end(); } catch {}
+      },
+      terminate() {
+        try { sock.destroy(); } catch {}
+      },
+      get readyState() {
+        if (sock.destroyed) return 3;
+        if (sock.connecting) return 0;
+        return 1;
+      },
+      get remoteAddress() { return sock.remoteAddress; },
+      get remotePort() { return sock.remotePort; },
+      get localAddress() { return sock.localAddress; },
+      get localPort() { return sock.localPort; },
+    };
+  }
+
+  function attachSocketHandlers(sock, wrapper, handlers) {
+    sock.on("data", (chunk) => {
+      try { handlers.data?.(wrapper, chunk); } catch {}
+    });
+    sock.on("drain", () => {
+      try { handlers.drain?.(wrapper); } catch {}
+    });
+    sock.on("close", () => {
+      try { handlers.close?.(wrapper); } catch {}
+    });
+    sock.on("error", (err) => {
+      try { handlers.error?.(wrapper, err); } catch {}
+    });
+  }
+
+  // ──────────────────────────────────────────────
+  // Bun.connect — TCP client, resolves once connected
+  //
+  // The agent proxy dials upstream with this when the sandbox lets a host
+  // through, and reads socket.remoteAddress to reject blocked ranges — that
+  // call site has no guard, so an absent Bun.connect throws mid-relay.
+  // ──────────────────────────────────────────────
+  function bunConnect(opts = {}) {
+    return new Promise((resolve, reject) => {
+      const handlers = opts.socket || {};
+      const sock = net.connect({
+        host: opts.hostname || opts.host || "127.0.0.1",
+        port: opts.port,
+      });
+      const wrapper = wrapSocket(sock);
+      let settled = false;
+
+      sock.once("connect", () => {
+        settled = true;
+        // Bun invokes open() before handing the socket back to the caller.
+        try { handlers.open?.(wrapper); } catch {}
+        resolve(wrapper);
+      });
+      // Only a pre-connect failure rejects; later errors go to the handler,
+      // which attachSocketHandlers wires up below.
+      sock.once("error", (err) => {
+        if (!settled) { settled = true; reject(err); }
+      });
+
+      attachSocketHandlers(sock, wrapper, handlers);
+    });
+  }
+
+  // ──────────────────────────────────────────────
   // Bun.listen — TCP server with Bun-like socket handlers
   // ──────────────────────────────────────────────
   function bunListen(opts = {}) {
     const handlers = opts.socket || {};
     const server = net.createServer((sock) => {
-      const wrapper = {
-        data: undefined,
-        write(data) {
-          const buf = typeof data === "string" ? Buffer.from(data, "utf8")
-            : Buffer.isBuffer(data) ? data
-            : Buffer.from(data);
-          if (sock.destroyed) return 0;
-          // Node already buffers when write() returns false; always report full
-          // acceptance to avoid caller-side double-buffer + re-write on drain.
-          sock.write(buf);
-          return buf.length;
-        },
-        end() {
-          try { sock.end(); } catch {}
-        },
-        terminate() {
-          try { sock.destroy(); } catch {}
-        },
-        get readyState() {
-          if (sock.destroyed) return 3;
-          if (sock.connecting) return 0;
-          return 1;
-        },
-        get remoteAddress() { return sock.remoteAddress; },
-        get remotePort() { return sock.remotePort; },
-        get localAddress() { return sock.localAddress; },
-        get localPort() { return sock.localPort; },
-      };
-
+      const wrapper = wrapSocket(sock);
       try { handlers.open?.(wrapper); } catch {}
-
-      sock.on("data", (chunk) => {
-        try { handlers.data?.(wrapper, chunk); } catch {}
-      });
-      sock.on("drain", () => {
-        try { handlers.drain?.(wrapper); } catch {}
-      });
-      sock.on("close", () => {
-        try { handlers.close?.(wrapper); } catch {}
-      });
-      sock.on("error", (err) => {
-        try { handlers.error?.(wrapper, err); } catch {}
-      });
+      attachSocketHandlers(sock, wrapper, handlers);
     });
 
     const host = opts.hostname || opts.host || "127.0.0.1";
@@ -447,10 +549,12 @@ if (typeof globalThis.Bun === "undefined") {
 
     file: bunFile,
 
-    hash: function hash(data, seed) {
+    // Object.assign carries bunHash's own properties across — Bun.hash is
+    // callable *and* namespaces xxHash64, and a bare wrapper would drop it.
+    hash: Object.assign(function hash(data, seed) {
       if (arguments.length === 1) return bunHash(data);
       return bunHash(data, seed);
-    },
+    }, bunHash),
 
     deepEquals,
 
@@ -471,21 +575,28 @@ if (typeof globalThis.Bun === "undefined") {
       return str;
     },
 
+    // Callers wrap order() in try/catch and rethrow as "Invalid SemVer", so a
+    // parse failure has to propagate. Catching everything here turned a
+    // rejected version into a silent 0 — equal — and made satisfies() answer
+    // true for input it never parsed. Only fall back when the module itself
+    // is unavailable, which is a different failure from bad input.
     semver: {
       order: (a, b) => {
-        try { return require("semver").compare(a, b); }
-        catch {
-          const pa = a.split(".").map(Number), pb = b.split(".").map(Number);
-          for (let i = 0; i < 3; i++) {
-            if ((pa[i] || 0) > (pb[i] || 0)) return 1;
-            if ((pa[i] || 0) < (pb[i] || 0)) return -1;
-          }
-          return 0;
+        let semverModule;
+        try { semverModule = require("semver"); } catch { semverModule = null; }
+        if (semverModule) return semverModule.compare(a, b);
+        const pa = String(a).split(".").map(Number), pb = String(b).split(".").map(Number);
+        for (let i = 0; i < 3; i++) {
+          if ((pa[i] || 0) > (pb[i] || 0)) return 1;
+          if ((pa[i] || 0) < (pb[i] || 0)) return -1;
         }
+        return 0;
       },
       satisfies: (version, range) => {
-        try { return require("semver").satisfies(version, range); }
-        catch { return true; }
+        let semverModule;
+        try { semverModule = require("semver"); } catch { semverModule = null; }
+        if (!semverModule) return true;
+        return semverModule.satisfies(version, range);
       },
     },
 
@@ -581,7 +692,13 @@ if (typeof globalThis.Bun === "undefined") {
     },
 
     listen: bunListen,
+    connect: bunConnect,
     serve: bunServe,
+
+    zstdDecompress,
+    zstdDecompressSync,
+
+    TOML: { parse: tomlParse },
     SQL: BunSQLPolyfill,
     stdin: bunStdin,
     WebView: BunWebView,

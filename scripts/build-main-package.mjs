@@ -34,7 +34,10 @@ export async function buildMainPackage({
     // Split builds ship ESM chunks; postinstall drops them next to cli.js,
     // so the package has to be typed as a module for Node to load them.
     ...(splitEsm ? { type: 'module' } : {}),
-    engines: { node: '>=22.0.0' },
+    // `using` / `await using` (explicit resource management) reaches Node in
+    // 24 — 67 sites across 20 chunks on 2.1.251, and Node 20 rejects them at
+    // parse time. zstd in node:zlib lands earlier, in 22.15, so 24 covers both.
+    engines: { node: '>=24.0.0' },
     scripts: { postinstall: 'node install.cjs' },
     author: 'Anthropic <support@anthropic.com>',
     license: 'SEE LICENSE IN README.md',
@@ -48,6 +51,8 @@ export async function buildMainPackage({
       undici: '^7.3.0',
       semver: '^7.6.3',
       'node-pty': '^1.1.0',
+      // Backs Bun.TOML, which has no Node equivalent — see the polyfill.
+      'smol-toml': '^1.8.0',
     },
     optionalDependencies: {
       ...optDeps,
