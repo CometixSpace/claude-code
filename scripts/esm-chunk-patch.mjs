@@ -87,6 +87,27 @@ export function rewriteBunfsPaths(code, prefix) {
 //
 //  Node would compile the markdown as JS and throw, taking the whole chunk
 //  with it, so route those extensions through readFileSync instead.
+//
+//  From 2.1.250 the bundler also loads sibling CHUNKS through require —
+//  358 sites where 2.1.246 used only dynamic import(). The static import
+//  graph stays acyclic, but a synchronous require is a second kind of edge
+//  the splitter does not keep acyclic, and 8 of those close a loop back
+//  through the import graph. Bun re-enters evaluation and hands back a
+//  partly-initialised namespace; Node refuses, because that would break an
+//  invariant the spec mandates, and throws ERR_REQUIRE_CYCLE_MODULE.
+//
+//  Those 8 sites read tool-name constants at module top level:
+//
+//    var aKe = require("…").SEARCH_MCP_REGISTRY_TOOL_NAME
+//    new Set([ …, ...aKe ? [aKe] : [], … ])
+//
+//  Every consumer guards with `x ? [x] : []` and none compares with ===,
+//  so the code already expects a value that may not be there yet — exactly
+//  what Bun's partial initialisation can hand it. Report undefined while
+//  the cycle is live and resolve for real once it closes; wrapping the
+//  value in a Proxy instead would only push the failure downstream, since
+//  a Proxy cannot stand in for a primitive (String(proxy) throws).
+//
 //  Object.assign keeps require.resolve/cache on the wrapper.
 // ──────────────────────────────────────────────
 
@@ -96,8 +117,18 @@ const REQUIRE_SHIM =
   'import{createRequire as __ccMakeRequire}from"module";' +
   'import{readFileSync as __ccReadText}from"fs";' +
   'const __ccRawRequire=__ccMakeRequire(import.meta.url);' +
-  'const __ccRequire=Object.assign((id)=>' +
-  `${TEXT_LOADER_EXT}.test(id)?__ccReadText(id,"utf8"):__ccRawRequire(id),` +
+  'const __ccCyclic=(e)=>e&&e.code==="ERR_REQUIRE_CYCLE_MODULE";' +
+  // Retried on every access: the same id resolves normally once the cycle
+  // that blocked it has finished evaluating.
+  'const __ccLazyNs=(id)=>new Proxy({},{get:(_,p)=>{' +
+  'try{return __ccRawRequire(id)[p]}catch(e){if(__ccCyclic(e))return undefined;throw e}},' +
+  'has:(_,p)=>{try{return p in __ccRawRequire(id)}catch(e){if(__ccCyclic(e))return false;throw e}},' +
+  'ownKeys:()=>{try{return Reflect.ownKeys(__ccRawRequire(id))}catch(e){if(__ccCyclic(e))return[];throw e}},' +
+  'getOwnPropertyDescriptor:(_,p)=>{try{const d=Reflect.getOwnPropertyDescriptor(__ccRawRequire(id),p);' +
+  'if(d)d.configurable=!0;return d}catch(e){if(__ccCyclic(e))return undefined;throw e}}});' +
+  'const __ccRequire=Object.assign((id)=>{' +
+  `if(${TEXT_LOADER_EXT}.test(id))return __ccReadText(id,"utf8");` +
+  'try{return __ccRawRequire(id)}catch(e){if(__ccCyclic(e))return __ccLazyNs(id);throw e}},' +
   '__ccRawRequire);';
 
 function firstStatementStart(code) {
