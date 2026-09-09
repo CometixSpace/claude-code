@@ -118,10 +118,22 @@ const REQUIRE_SHIM =
   'import{readFileSync as __ccReadText}from"fs";' +
   'const __ccRawRequire=__ccMakeRequire(import.meta.url);' +
   'const __ccCyclic=(e)=>e&&e.code==="ERR_REQUIRE_CYCLE_MODULE";' +
+  // Tool exports are objects/functions that may be captured at module scope.
+  // Keep those references live so a cycle cannot permanently cache undefined.
+  'const __ccDeferredExport=(id,p)=>{const resolve=()=>{try{return __ccRawRequire(id)[p]}catch(e){if(__ccCyclic(e))return undefined;throw e}};' +
+  'return new Proxy(function(){const v=resolve();if(typeof v!=="function")throw new TypeError(`Cyclic export ${String(p)} is not callable`);return Reflect.apply(v,this,arguments)},{' +
+  'get:(_,k)=>{const v=resolve();return v===undefined?undefined:Reflect.get(v,k)},' +
+  'set:(_,k,v)=>{const t=resolve();return t!==undefined&&Reflect.set(t,k,v)},' +
+  'has:(_,k)=>{const v=resolve();return v!==undefined&&k in Object(v)},' +
+  'apply:(_,thisArg,args)=>{const v=resolve();if(typeof v!=="function")throw new TypeError(`Cyclic export ${String(p)} is not callable`);return Reflect.apply(v,thisArg,args)},' +
+  'construct:(_,args,newTarget)=>{const v=resolve();if(typeof v!=="function")throw new TypeError(`Cyclic export ${String(p)} is not constructable`);return Reflect.construct(v,args,newTarget)},' +
+  'ownKeys:()=>{const v=resolve();return v===undefined?[]:Reflect.ownKeys(Object(v))},' +
+  'getOwnPropertyDescriptor:(_,k)=>{const v=resolve();if(v===undefined)return undefined;const d=Reflect.getOwnPropertyDescriptor(Object(v),k);if(d)d.configurable=true;return d}' +
+  '})};' +
   // Retried on every access: the same id resolves normally once the cycle
   // that blocked it has finished evaluating.
   'const __ccLazyNs=(id)=>new Proxy({},{get:(_,p)=>{' +
-  'try{return __ccRawRequire(id)[p]}catch(e){if(__ccCyclic(e))return undefined;throw e}},' +
+  'try{return __ccRawRequire(id)[p]}catch(e){if(__ccCyclic(e))return /(?:Tool|TOOLS)$/.test(String(p))?__ccDeferredExport(id,p):undefined;throw e}},' +
   'has:(_,p)=>{try{return p in __ccRawRequire(id)}catch(e){if(__ccCyclic(e))return false;throw e}},' +
   'ownKeys:()=>{try{return Reflect.ownKeys(__ccRawRequire(id))}catch(e){if(__ccCyclic(e))return[];throw e}},' +
   'getOwnPropertyDescriptor:(_,p)=>{try{const d=Reflect.getOwnPropertyDescriptor(__ccRawRequire(id),p);' +
