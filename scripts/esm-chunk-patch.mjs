@@ -101,7 +101,9 @@ export function rewriteBunfsPaths(code, prefix) {
 //    var a = e("/$bunfs/root/anti-patterns-c1rmzbdk.md");
 //
 //  Node would compile the markdown as JS and throw, taking the whole chunk
-//  with it, so route those extensions through readFileSync instead.
+//  with it, so route those extensions through readFileSync instead. Resolve
+//  through the module's require first: E2 emits relative paths, while fs
+//  would otherwise interpret them against the caller's working directory.
 //
 //  From 2.1.250 the bundler also loads sibling CHUNKS through require —
 //  358 sites where 2.1.246 used only dynamic import(). The static import
@@ -172,7 +174,7 @@ const REQUIRE_SHIM =
   'getOwnPropertyDescriptor:(_,p)=>{try{const d=Reflect.getOwnPropertyDescriptor(__ccRawRequire(id),p);' +
   'if(d)d.configurable=!0;return d}catch(e){if(__ccCyclic(e))return undefined;throw e}}});' +
   'const __ccRequire=Object.assign((id)=>{' +
-  `if(${TEXT_LOADER_EXT}.test(id))return __ccReadText(id,"utf8");` +
+  `if(${TEXT_LOADER_EXT}.test(id))return __ccReadText(__ccRawRequire.resolve(id),"utf8");` +
   'try{return __ccRawRequire(id)}catch(e){if(__ccCyclic(e))return __ccLazyNs(id);throw e}},' +
   '__ccRawRequire);';
 

@@ -10,7 +10,8 @@
     "extract": "node scripts/bun-sea-extract.mjs",
     "patch": "node scripts/node-compat-patch.mjs",
     "assemble": "node scripts/assemble-package.mjs",
-    "process": "node scripts/fetch-and-process.mjs"
+    "process": "node scripts/fetch-and-process.mjs",
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "acorn": "^8.16.0",
