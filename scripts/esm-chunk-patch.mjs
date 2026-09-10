@@ -44,7 +44,11 @@ const LITERAL_RE = new RegExp(`"(?:${ROOT_ALT})([^"]*)"`, 'g');
 //  E1: BunFS specifiers → relative paths
 // ──────────────────────────────────────────────
 
-// "./" at the root, "../" per level for entries nested under src/**
+// Path from the referencing file's directory back to the extract root, which
+// is what every BunFS target is named relative to. Prepending it to a target
+// yields the correct specifier at any depth on either side — the referencing
+// file may be nested (src/plugins/**), and so may the target, since the name
+// after the BunFS root keeps its own directories.
 function prefixFor(relDir) {
   if (relDir === '.' || relDir === '') return './';
   const depth = relDir.split(sep).filter(Boolean).length;
@@ -67,14 +71,17 @@ export function rewriteBunfsPaths(code, prefix) {
   //   ve("/$bunfs/root/audio-capture.node")  → ve("./audio-capture.node")
   //   JJ("/$bunfs/root/mermaid.min.js", d)   → JJ("mermaid.min.js", d)
   //
-  // Anything require() resolves — native modules and sibling chunks alike —
-  // needs the explicit "./", or Node treats it as a package name. Assets go
-  // through the loader's own `isAbsolute(t) ? t : join(dir, t)` against
-  // import.meta.dirname, where a bare name already lands beside the entry.
+  // Every target is rewritten relative to the file doing the referencing,
+  // whatever its kind. require() needs the explicit "./" anyway, and the
+  // asset loader resolves `isAbsolute(t) ? t : join(dir, t)` against
+  // import.meta.dirname — which is the *referencing* file's directory, not
+  // the package root. A bare name only works while everything sits at the
+  // root; the moment upstream nests a chunk, join() would look for the asset
+  // beside that chunk instead. Carrying the prefix costs nothing today
+  // (join(root, "./x") === join(root, "x")) and keeps the depth correct.
   code = code.replace(LITERAL_RE, (_m, target) => {
     literals++;
-    const viaRequire = target.endsWith('.node') || target.endsWith('.js');
-    return JSON.stringify(viaRequire ? `${prefix}${target}` : target);
+    return JSON.stringify(`${prefix}${target}`);
   });
 
   return { code, specifiers, literals };
