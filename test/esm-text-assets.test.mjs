@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -13,7 +13,10 @@ const execFileAsync = promisify(execFile);
 for (const bunfsRoot of BUNFS_ROOTS) {
   for (const nested of [false, true]) {
     test(`loads text independently of cwd (${bunfsRoot}, ${nested ? 'nested' : 'flat'})`, async (t) => {
-      const dir = await mkdtemp(join(tmpdir(), 'cc-text-assets-'));
+      // realpath, because require.resolve() reports the resolved path while
+      // mkdtemp does not — on macOS tmpdir() is a symlink into /private/var,
+      // so comparing the two verbatim fails for a reason the test is not about.
+      const dir = await realpath(await mkdtemp(join(tmpdir(), 'cc-text-assets-')));
       t.after(() => rm(dir, { recursive: true, force: true }));
       const packageDir = join(dir, 'package with spaces #资源');
       const moduleDir = nested ? join(packageDir, 'chunks') : packageDir;
