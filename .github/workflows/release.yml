@@ -82,9 +82,14 @@ jobs:
 
           cd "$VERIFY"
           npm install --omit=optional --no-audit --no-fund
-          node cli.js --version
-          node cli.js --help | head -5
-          node cli.js mcp list
+
+          # Users launch from project directories, not the package directory.
+          # Running here catches assets accidentally resolved against cwd.
+          cd /tmp
+          node "$VERIFY/cli.js" --version
+          node "$VERIFY/cli.js" --help > "$VERIFY/help.txt"
+          head -5 "$VERIFY/help.txt"
+          node "$VERIFY/cli.js" mcp list
 
           rm -rf "$VERIFY"
 
