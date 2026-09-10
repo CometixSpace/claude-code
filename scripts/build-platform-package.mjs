@@ -86,12 +86,12 @@ export async function buildPlatformPackage({
   ];
 
   // 1. Entry point (+ the rest of the module tree on split builds)
+  //
+  // Split builds keep the extract's own layout: native modules and assets sit
+  // beside the chunks, which is where the code looks for them. Only ripgrep
+  // and seccomp go under vendor/ — we add those, upstream ships neither.
   if (splitEsm) {
-    // Native modules and assets are copied into vendor/ below; the patched
-    // code resolves them from there, so they must not also sit at the root.
-    const skip = new Set(napiModules.map((m) => `${m}.node`));
-    for (const asset of await listAssetFiles(extractDir)) skip.add(asset);
-    const copied = await copyModuleTree(extractDir, outputDir, skip);
+    const copied = await copyModuleTree(extractDir, outputDir, new Set());
     await chmod(join(outputDir, entryRel), 0o755);
     console.log(`  [OK] module tree (${copied} files, entry ${entryRel})`);
   } else {
@@ -100,9 +100,10 @@ export async function buildPlatformPackage({
     console.log(`  [OK] cli.js`);
   }
 
-  // 2. vendor/audio-capture + computer-use-swift + computer-use-input
+  // 2. vendor/<napi>/<arch>-<os>/ — single-CJS only. There the patched cli.js
+  // resolves natives through that path; split builds require them relatively.
   const vd = vendorDir(platform === 'android-arm64' ? 'linux-arm64' : platform);
-  if (vd && extractDir) {
+  if (!splitEsm && vd && extractDir) {
     for (const mod of napiModules) {
       const src = join(extractDir, `${mod}.node`);
       try {
@@ -115,11 +116,12 @@ export async function buildPlatformPackage({
     }
   }
 
-  // 2b. vendor/assets — BunFS static files read via fs.readFile, not import:
-  // the artifact runtimes (chart/hljs/mermaid) and, from v2.1.229+, the
+  // 2b. vendor/assets — single-CJS only, same reason as the natives above.
+  // These are the files read via fs.readFile rather than imported: the
+  // artifact runtimes (chart/hljs/mermaid) and, from v2.1.229+, the
   // design-canvas payload template. Platform-independent, so musl gets them
   // too even though vd is null there and the NAPI copy above is skipped.
-  if (extractDir) {
+  if (!splitEsm && extractDir) {
     const assetDest = join(outputDir, 'vendor', 'assets');
     let copied = 0;
     for (const name of await listAssetFiles(extractDir)) {

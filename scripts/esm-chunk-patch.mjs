@@ -60,13 +60,21 @@ export function rewriteBunfsPaths(code, prefix) {
     return `${kw}${gap}"${prefix}${target}"`;
   });
 
-  // E2: runtime paths resolve through the globals the polyfill installs.
-  // Native modules live under vendor/, everything else next to the entry.
+  // E2: runtime paths become relative, because the extract is already laid
+  // out the way the code expects — native modules and assets sit beside the
+  // chunks, not in a directory of our own making.
+  //
+  //   ve("/$bunfs/root/audio-capture.node")  → ve("./audio-capture.node")
+  //   JJ("/$bunfs/root/mermaid.min.js", d)   → JJ("mermaid.min.js", d)
+  //
+  // Anything require() resolves — native modules and sibling chunks alike —
+  // needs the explicit "./", or Node treats it as a package name. Assets go
+  // through the loader's own `isAbsolute(t) ? t : join(dir, t)` against
+  // import.meta.dirname, where a bare name already lands beside the entry.
   code = code.replace(LITERAL_RE, (_m, target) => {
     literals++;
-    return target.endsWith('.node')
-      ? `globalThis.__ccVendorNode(${JSON.stringify(target)})`
-      : `globalThis.__ccAsset(${JSON.stringify(target)})`;
+    const viaRequire = target.endsWith('.node') || target.endsWith('.js');
+    return JSON.stringify(viaRequire ? `${prefix}${target}` : target);
   });
 
   return { code, specifiers, literals };
@@ -259,24 +267,21 @@ const POLYFILL_MODULE = 'bun-polyfill.mjs';
 const ESM_PRELUDE = [
   'import{createRequire as __ccCreateRequire}from"module";',
   'import{fileURLToPath as __ccFileURLToPath}from"url";',
-  'import{dirname as __ccPathDirname,join as __ccJoin}from"path";',
+  'import{dirname as __ccPathDirname}from"path";',
   'const require=__ccCreateRequire(import.meta.url);',
   'const __filename=__ccFileURLToPath(import.meta.url);',
   'const __dirname=__ccPathDirname(__filename);',
   '',
 ].join('\n');
 
+// Only what astPatch's module mode injects still needs a global; E2 rewrites
+// runtime paths to plain relative strings, so no asset or native-module
+// helper is required.
 const ESM_HELPERS = [
   '',
-  '// Names the patched chunks resolve against (see E2 and astPatch module mode)',
+  '// Names the patched chunks resolve against (see astPatch module mode)',
   'globalThis.__ccNodeRequire=require;',
   'globalThis.__ccDirname=()=>__dirname;',
-  'globalThis.__ccAsset=(name)=>name?__ccJoin(__dirname,name):__dirname;',
-  'globalThis.__ccVendorNode=(name)=>{',
-  '  const base=name.replace(/\\.node$/,"");',
-  '  const p=__ccJoin(__dirname,"vendor",base,process.arch+"-"+process.platform,name);',
-  '  return require("fs").existsSync(p)?p:__ccJoin(__dirname,name);',
-  '};',
   '',
 ].join('\n');
 
