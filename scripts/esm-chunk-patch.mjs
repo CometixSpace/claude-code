@@ -96,17 +96,19 @@ export function rewriteBunfsPaths(code, prefix) {
 //  partly-initialised namespace; Node refuses, because that would break an
 //  invariant the spec mandates, and throws ERR_REQUIRE_CYCLE_MODULE.
 //
-//  Those 8 sites read tool-name constants at module top level:
+//  Some of those sites read tool-name constants, which every consumer
+//  guards with `x ? [x] : []`. Others pull whole tool objects into the
+//  registry, unguarded:
 //
-//    var aKe = require("…").SEARCH_MCP_REGISTRY_TOOL_NAME
-//    new Set([ …, ...aKe ? [aKe] : [], … ])
+//    let kt = Zk();                                  // [ArtifactTool, …]
+//    new Set([...kt.map((ft) => ft.name), …])         // throws on a hole
 //
-//  Every consumer guards with `x ? [x] : []` and none compares with ===,
-//  so the code already expects a value that may not be there yet — exactly
-//  what Bun's partial initialisation can hand it. Report undefined while
-//  the cycle is live and resolve for real once it closes; wrapping the
-//  value in a Proxy instead would only push the failure downstream, since
-//  a Proxy cannot stand in for a primitive (String(proxy) throws).
+//  So handing back undefined during the cycle is not safe in general — it
+//  reached 2.1.259 and took startup down with "Cannot read properties of
+//  undefined (reading 'name')". Return a lazy stand-in instead: it resolves
+//  the real export on first touch, which succeeds once the cycle has
+//  finished evaluating. Primitives are read through directly, since a Proxy
+//  cannot impersonate one (String(proxy) throws).
 //
 //  Object.assign keeps require.resolve/cache on the wrapper.
 // ──────────────────────────────────────────────
@@ -118,10 +120,38 @@ const REQUIRE_SHIM =
   'import{readFileSync as __ccReadText}from"fs";' +
   'const __ccRawRequire=__ccMakeRequire(import.meta.url);' +
   'const __ccCyclic=(e)=>e&&e.code==="ERR_REQUIRE_CYCLE_MODULE";' +
+  // Resolve the export, or report that the cycle is still live.
+  'const __ccPeek=(id,p)=>{try{return{ok:!0,v:__ccRawRequire(id)[p]}}' +
+  'catch(e){if(__ccCyclic(e))return{ok:!1};throw e}};' +
+  // Stand-in for an export the cycle has not produced yet. Cached per
+  // (module, property) so repeated grabs stay identical and === holds
+  // between them. The target is a function: exports include callables, and
+  // an arrow has no non-configurable own properties to violate the Proxy
+  // invariants.
+  'globalThis.__ccLazyVals??=new Map();' +
+  'const __ccLazyVal=(id,p)=>{const k=id+"\\0"+p,m=globalThis.__ccLazyVals;' +
+  'if(m.has(k))return m.get(k);' +
+  'let v,got=!1;const g=()=>{if(!got){const r=__ccPeek(id,p);if(r.ok){v=r.v;got=!0}}return v};' +
+  'const px=new Proxy(function(){},{get:(_,q)=>{const t=g();' +
+  'if(t==null)return undefined;const x=t[q];' +
+  'return typeof x==="function"?x.bind(t):x},' +
+  'apply:(_,th,a)=>Reflect.apply(g(),th,a),' +
+  'construct:(_,a)=>Reflect.construct(g(),a),' +
+  'has:(_,q)=>{const t=g();return t!=null&&q in t},' +
+  'ownKeys:()=>{const t=g();return t==null?[]:Reflect.ownKeys(t)},' +
+  'getOwnPropertyDescriptor:(_,q)=>{const t=g();' +
+  'const d=t==null?undefined:Reflect.getOwnPropertyDescriptor(t,q);' +
+  'if(d)d.configurable=!0;return d},' +
+  'getPrototypeOf:()=>{const t=g();return t==null?null:Reflect.getPrototypeOf(Object(t))}});' +
+  'm.set(k,px);return px};' +
   // Retried on every access: the same id resolves normally once the cycle
-  // that blocked it has finished evaluating.
+  // that blocked it has finished evaluating. A primitive is returned as-is,
+  // since no Proxy can impersonate one.
   'const __ccLazyNs=(id)=>new Proxy({},{get:(_,p)=>{' +
-  'try{return __ccRawRequire(id)[p]}catch(e){if(__ccCyclic(e))return undefined;throw e}},' +
+  'const r=__ccPeek(id,p);' +
+  'if(r.ok)return r.v;' +
+  'if(typeof p!=="string"||p==="then")return undefined;' +
+  'return __ccLazyVal(id,p)},' +
   'has:(_,p)=>{try{return p in __ccRawRequire(id)}catch(e){if(__ccCyclic(e))return false;throw e}},' +
   'ownKeys:()=>{try{return Reflect.ownKeys(__ccRawRequire(id))}catch(e){if(__ccCyclic(e))return[];throw e}},' +
   'getOwnPropertyDescriptor:(_,p)=>{try{const d=Reflect.getOwnPropertyDescriptor(__ccRawRequire(id),p);' +
@@ -130,6 +160,74 @@ const REQUIRE_SHIM =
   `if(${TEXT_LOADER_EXT}.test(id))return __ccReadText(id,"utf8");` +
   'try{return __ccRawRequire(id)}catch(e){if(__ccCyclic(e))return __ccLazyNs(id);throw e}},' +
   '__ccRawRequire);';
+
+// ──────────────────────────────────────────────
+//  Hoist top-level chunk requires to static imports
+//
+//  A require() only lands mid-cycle because the target has not finished
+//  evaluating. Adding a bare `import "./chunk-x.js"` ahead of the module
+//  body forces exactly that: ESM evaluates the target first, and the
+//  original require becomes a cache hit that never sees the cycle.
+//
+//  2.1.259 has 149 such sites across 22 chunks — 64 of them in the one that
+//  builds the tool registry. Requires inside function bodies are left alone:
+//  they run after startup, where a plain require(esm) already works.
+//
+//  This is prevention; the lazy proxies above stay as the fallback for
+//  whatever it cannot reach.
+// ──────────────────────────────────────────────
+
+const FN_TYPES = new Set([
+  'FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression',
+]);
+
+export function hoistTopLevelChunkRequires(code, prefix) {
+  if (!code.includes('import.meta.require')) return { code, hoisted: 0 };
+  let ast;
+  try {
+    ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' });
+  } catch {
+    return { code, hoisted: 0 };
+  }
+
+  const targets = new Set();
+  (function visit(node, inFn) {
+    if (!inFn &&
+        node.type === 'CallExpression' &&
+        node.callee?.type === 'MemberExpression' &&
+        node.callee.object?.type === 'MetaProperty' &&
+        node.callee.property?.name === 'require' &&
+        node.arguments?.length === 1) {
+      const arg = node.arguments[0];
+      if (arg?.type === 'Literal' && typeof arg.value === 'string') {
+        const target = stripBunfsRoot(arg.value);
+        if (target?.endsWith('.js')) targets.add(target);
+      }
+    }
+    for (const key of Object.keys(node)) {
+      const child = node[key];
+      if (Array.isArray(child)) {
+        for (const item of child) {
+          if (item && typeof item.type === 'string') visit(item, inFn || FN_TYPES.has(item.type));
+        }
+      } else if (child && typeof child.type === 'string') {
+        visit(child, inFn || FN_TYPES.has(child.type));
+      }
+    }
+  })(ast, false);
+
+  if (targets.size === 0) return { code, hoisted: 0 };
+  const imports = [...targets].map((t) => `import${JSON.stringify(prefix + t)};`).join('');
+  const at = ast.body.length > 0 ? ast.body[0].start : code.length;
+  return { code: code.slice(0, at) + imports + code.slice(at), hoisted: targets.size };
+}
+
+function stripBunfsRoot(value) {
+  for (const root of BUNFS_ROOTS) {
+    if (value.startsWith(root)) return value.slice(root.length);
+  }
+  return null;
+}
 
 function firstStatementStart(code) {
   const ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' });
@@ -215,7 +313,7 @@ export async function patchSplitEsm({ extractDir, entryRel = 'cli.js' }) {
   const files = await listJsFiles(extractDir);
   const stats = {
     files: files.length, specifiers: 0, literals: 0,
-    metaRequire: 0, rebrand: 0, ast: {},
+    metaRequire: 0, rebrand: 0, hoisted: 0, ast: {},
   };
   let leftover = 0;
 
@@ -230,7 +328,13 @@ export async function patchSplitEsm({ extractDir, entryRel = 'cli.js' }) {
     const before = await readFile(path, 'utf8');
     const prefix = prefixFor(dirname(rel));
 
-    const rewritten = rewriteBunfsPaths(before, prefix);
+    // Hoisting reads the BunFS specifiers, so it has to run before they are
+    // rewritten — and before E3, which turns import.meta.require into a call
+    // this no longer recognises.
+    const hoist = hoistTopLevelChunkRequires(before, prefix);
+    stats.hoisted += hoist.hoisted;
+
+    const rewritten = rewriteBunfsPaths(hoist.code, prefix);
     let code = rewritten.code;
     stats.specifiers += rewritten.specifiers;
     stats.literals += rewritten.literals;
