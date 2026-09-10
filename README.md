@@ -89,7 +89,7 @@ Split-ESM builds keep upstream's own layout — modules, native libraries and as
 cli.js                ESM entry point
 chunk-*.js            Code-split modules (~1400–1800)
 bun-polyfill.mjs      Bun globals, imported first
-*.node                Native modules for this platform
+*.node                Native modules — see below
 *.md, *.txt           Embedded skill prompts and templates (2.1.246+)
 *.min.js, *.asset     Artifact runtimes and the design-canvas template
 sdk-tools.d.ts        SDK type definitions
@@ -97,6 +97,21 @@ vendor/
 ├── ripgrep/          Code search — added here, not shipped upstream
 └── seccomp/          Linux sandbox (arm64 + x64)
 ```
+
+Which native modules a package carries depends on the target — upstream builds most of them for one platform only:
+
+| Module | Purpose | darwin | linux | win32 |
+|--------|---------|:------:|:-----:|:-----:|
+| `audio-capture` | Voice input | ✓ | ✓ | ✓ |
+| `image-processor` | Image handling | ✓ | ✓ | ✓ |
+| `computer-use-swift` | Screen capture / control | ✓ | | |
+| `computer-use-input` | Synthetic input events | ✓ | | |
+| `url-handler` | URL scheme registration | ✓ | | |
+| `clipboard-napi` | Clipboard access | | ✓ | |
+
+So a darwin package ships five, linux three and win32 two. Patch-site counts differ for the same reason, which is why the scanner checks that required sites exist rather than that a fixed number of them do.
+
+`clipboard-napi` is loaded differently from the rest: the code tries the embedded copy first and falls back to a `vendor/clipboard-napi/<arch>-<os>/` lookup of its own. Keeping the extract's layout means the first path resolves, so the fallback never has to.
 
 Assets stay compressed on disk where upstream compresses them; the loader sniffs the zstd magic and decompresses on read.
 
