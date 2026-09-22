@@ -82,7 +82,8 @@ export async function buildMainPackage({
       // keeps them if the tree is ever staged before publishing.
       ...(splitEsm ? [
         'chunk-*.js', 'bun-polyfill.mjs', 'bun-image-compat.cjs',
-        'bun-sharp-compat.cjs', 'src/', 'vendor/',
+        'bun-sharp-compat.cjs', 'bun-transpiler-compat.cjs',
+        'node-fetch-compat.mjs', 'src/', 'vendor/',
       ] : []),
     ],
   };

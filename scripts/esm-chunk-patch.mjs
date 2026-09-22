@@ -315,6 +315,69 @@ export function rewriteHooksWorker(code) {
   return { code: out, rewritten: matches.length };
 }
 
+// ──────────────────────────────────────────────
+//  E7: node-fetch → the global fetch
+//
+//  Bun resolves `node-fetch` to a built-in module. Node has no such package,
+//  and the one importer — gaxios, Google Auth's HTTP layer — reaches for it
+//  with no catch around the call, so every Vertex AI request throws
+//  ERR_MODULE_NOT_FOUND before it is sent.
+//
+//  The specifier is repointed at templates/node-fetch-compat.mjs rather than
+//  the package being added as a dependency; the reasoning for that is in the
+//  shim's own header.
+//
+//  Matched on the AST rather than by text: "node-fetch" also appears in the
+//  embedded package.json metadata gaxios carries, and only a specifier
+//  position is a module resolution.
+// ──────────────────────────────────────────────
+
+const NODE_FETCH_MODULE = 'node-fetch-compat.mjs';
+
+export function rewriteNodeFetch(code, prefix) {
+  if (!code.includes('node-fetch')) return { code, rewritten: 0 };
+  let ast;
+  try {
+    ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' });
+  } catch {
+    return { code, rewritten: 0 };
+  }
+
+  const sites = [];
+  (function visit(node) {
+    // `import x from "node-fetch"`, `export … from "node-fetch"`, and the
+    // dynamic `import("node-fetch")` all park the specifier in .source.
+    const source = (node.type === 'ImportDeclaration'
+      || node.type === 'ImportExpression'
+      || node.type === 'ExportNamedDeclaration'
+      || node.type === 'ExportAllDeclaration') ? node.source : null;
+    if (source?.type === 'Literal' && source.value === 'node-fetch') sites.push(source);
+    // require("node-fetch") — the CJS chunks reach it this way.
+    if (node.type === 'CallExpression'
+        && node.callee?.type === 'Identifier' && node.callee.name === 'require'
+        && node.arguments[0]?.type === 'Literal'
+        && node.arguments[0].value === 'node-fetch') {
+      sites.push(node.arguments[0]);
+    }
+    for (const key of Object.keys(node)) {
+      const child = node[key];
+      if (Array.isArray(child)) {
+        for (const item of child) if (item && typeof item.type === 'string') visit(item);
+      } else if (child && typeof child.type === 'string') {
+        visit(child);
+      }
+    }
+  })(ast);
+
+  let out = code;
+  for (const node of sites.sort((a, b) => b.start - a.start)) {
+    out = out.slice(0, node.start)
+      + JSON.stringify(`${prefix}${NODE_FETCH_MODULE}`)
+      + out.slice(node.end);
+  }
+  return { code: out, rewritten: sites.length };
+}
+
 function firstStatementStart(code) {
   const ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' });
   return ast.body.length > 0 ? ast.body[0].start : code.length;
@@ -396,7 +459,7 @@ export async function patchSplitEsm({ extractDir, entryRel = 'cli.js' }) {
   const files = await listJsFiles(extractDir);
   const stats = {
     files: files.length, specifiers: 0, literals: 0,
-    metaRequire: 0, rebrand: 0, hoisted: 0, hooksWorkers: 0, ast: {},
+    metaRequire: 0, rebrand: 0, hoisted: 0, hooksWorkers: 0, nodeFetch: 0, ast: {},
   };
   let leftover = 0;
 
@@ -425,6 +488,10 @@ export async function patchSplitEsm({ extractDir, entryRel = 'cli.js' }) {
     const hooksWorker = rewriteHooksWorker(code);
     code = hooksWorker.code;
     stats.hooksWorkers += hooksWorker.rewritten;
+
+    const nodeFetch = rewriteNodeFetch(code, prefix);
+    code = nodeFetch.code;
+    stats.nodeFetch += nodeFetch.rewritten;
 
     const meta = patchImportMetaRequire(code);
     code = meta.code;
@@ -484,6 +551,13 @@ export async function patchSplitEsm({ extractDir, entryRel = 'cli.js' }) {
   await writeFile(
     join(extractDir, 'bun-image-compat.cjs'),
     readFileSync(join(__dirname, '..', 'templates', 'bun-image-compat.cjs')),
+  );
+  // Target of the E7 rewrites above. Written whether or not any fired, so a
+  // chunk that starts importing node-fetch later resolves rather than
+  // half-resolving against a file that was never shipped.
+  await writeFile(
+    join(extractDir, NODE_FETCH_MODULE),
+    readFileSync(join(__dirname, '..', 'templates', 'node-fetch-compat.mjs')),
   );
 
   // Ship the polyfill next to the entry and import it first, so globalThis.Bun
