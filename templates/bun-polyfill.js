@@ -1586,4 +1586,93 @@ if (typeof globalThis.Bun === "undefined") {
       require.cache[_wsPath].exports.default = _PatchedWS;
     }
   } catch {}
+
+  // ──────────────────────────────────────────────
+  // CONNECT-tunnel what axios sends in plaintext
+  //
+  // The bundled axios honours HTTP(S)_PROXY by sending a plain HTTP request
+  // to the proxy with the absolute target URL as the path — it never opens a
+  // CONNECT tunnel. The proxy forwards that cleartext to port 443 and the
+  // origin answers "400 The plain HTTP request was sent to HTTPS port", which
+  // is what `claude remote-control` registration fails with behind a proxy.
+  // The official Bun build has the same problem: anthropics/claude-code#71781
+  //
+  // Nothing else produces an http.request whose path is an absolute https://
+  // URL — an ordinary request carries a relative path — so that shape alone
+  // identifies the calls to reissue as real HTTPS through a CONNECT tunnel.
+  // ──────────────────────────────────────────────
+  try {
+    const tls = require("tls");
+    const tunnelAgents = new Map();
+
+    function tunnelAgentFor(proxyHost, proxyPort, proxyAuth) {
+      const key = `${proxyHost}:${proxyPort}:${proxyAuth || ""}`;
+      const cached = tunnelAgents.get(key);
+      if (cached) return cached;
+
+      const agent = new https.Agent({ keepAlive: false });
+      agent.createConnection = (opts, cb) => {
+        const connectReq = http.request({
+          host: proxyHost,
+          port: proxyPort,
+          method: "CONNECT",
+          path: `${opts.host}:${opts.port}`,
+          headers: {
+            host: `${opts.host}:${opts.port}`,
+            ...(proxyAuth ? { "proxy-authorization": proxyAuth } : {}),
+          },
+        });
+        connectReq.once("connect", (res, socket) => {
+          if (res.statusCode !== 200) {
+            socket.destroy();
+            cb(new Error(`Proxy CONNECT to ${opts.host}:${opts.port} failed: ${res.statusCode}`));
+            return;
+          }
+          const tlsSocket = tls.connect(
+            { socket, servername: opts.servername || opts.host },
+            () => cb(null, tlsSocket),
+          );
+          tlsSocket.once("error", cb);
+        });
+        connectReq.once("error", cb);
+        connectReq.end();
+      };
+
+      tunnelAgents.set(key, agent);
+      return agent;
+    }
+
+    const originalHttpRequest = http.request;
+    http.request = function (...args) {
+      const opts = args[0];
+      if (opts && typeof opts === "object" && typeof opts.path === "string"
+          && opts.path.startsWith("https://")) {
+        let target;
+        try { target = new URL(opts.path); } catch {}
+        if (target) {
+          // The proxy credentials belong on the CONNECT, not on the tunnelled
+          // request, so move them onto the agent and strip them here.
+          const headers = { ...(opts.headers || {}) };
+          let proxyAuth;
+          for (const key of Object.keys(headers)) {
+            if (key.toLowerCase() === "proxy-authorization") {
+              proxyAuth = headers[key];
+              delete headers[key];
+            }
+          }
+          return https.request({
+            ...opts,
+            protocol: "https:",
+            host: target.hostname,
+            hostname: target.hostname,
+            port: target.port || 443,
+            path: target.pathname + target.search,
+            headers,
+            agent: tunnelAgentFor(opts.hostname || opts.host, opts.port || 80, proxyAuth),
+          }, ...args.slice(1));
+        }
+      }
+      return originalHttpRequest.apply(this, args);
+    };
+  } catch {}
 }
