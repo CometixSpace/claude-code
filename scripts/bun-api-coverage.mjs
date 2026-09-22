@@ -28,6 +28,25 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 //  Bun.zstdDecompress* is to look at the bytes.
 // ──────────────────────────────────────────────
 
+// Members left out on purpose, so the report keeps pointing at real gaps.
+// These need something JS cannot reach; every call site degrades without
+// them, unlike Bun.ant.CellSegmenter, which is pure computation and throws.
+const DELIBERATE_GAPS = {
+  ant: new Set([
+    'getPeerUid',           // SO_PEERCRED / LOCAL_PEERCRED
+    'getPeerPid',           // as above
+    'memoryPressureLevel',  // macOS memory-pressure source
+    'waitForUrlEvent',      // native URL-scheme event pump
+  ]),
+  unsafe: new Set([
+    'setJITPolicy',         // Bun JIT tuning; no Node equivalent
+  ]),
+};
+
+function isDeliberate(api, member) {
+  return DELIBERATE_GAPS[api]?.has(member) === true;
+}
+
 // zstd frame magic — what the bundle's own loader checks for.
 const ZSTD_MAGIC = [0x28, 0xb5, 0x2f, 0xfd];
 
@@ -187,7 +206,9 @@ export async function scanBunApis(extractDir, files, { sourceType = 'module' } =
     for (const [api, { members, guarded }] of used) {
       if (!defined.has(api) || members.size === 0) continue;
       const ns = live[api];
-      const gaps = [...members].filter((m) => ns?.[m] === undefined).sort();
+      const gaps = [...members]
+        .filter((m) => ns?.[m] === undefined && !isDeliberate(api, m))
+        .sort();
       if (gaps.length) shallow.push({ api, members: gaps, guarded });
     }
   }

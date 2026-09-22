@@ -1174,3 +1174,1172 @@ var wrapAnsi2 = wrapAnsi;
   stripANSI,
   wrapAnsi
 });
+
+/*!
+slice-ansi 9.0.0
+MIT License
+
+Copyright (c) DC <threedeecee@gmail.com>
+Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
+ansi-styles 6.2.3
+MIT License
+
+Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
+get-east-asian-width 1.6.0
+MIT License
+
+Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
+is-fullwidth-code-point 5.1.0
+MIT License
+
+Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+*/
+var __ccAnsiSlice = (() => {
+  var __defProp = Object.defineProperty;
+  var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+  var __getOwnPropNames = Object.getOwnPropertyNames;
+  var __hasOwnProp = Object.prototype.hasOwnProperty;
+  var __export = (target, all) => {
+    for (var name in all)
+      __defProp(target, name, { get: all[name], enumerable: true });
+  };
+  var __copyProps = (to, from, except, desc) => {
+    if (from && typeof from === "object" || typeof from === "function") {
+      for (let key of __getOwnPropNames(from))
+        if (!__hasOwnProp.call(to, key) && key !== except)
+          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+    }
+    return to;
+  };
+  var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+  // dl-2.1.271-output/deps/slice-entry.js
+  var slice_entry_exports = {};
+  __export(slice_entry_exports, {
+    sliceAnsi: () => sliceAnsi
+  });
+
+  // dl-2.1.271-output/deps/node_modules/ansi-styles/index.js
+  var ANSI_BACKGROUND_OFFSET = 10;
+  var wrapAnsi16 = (offset = 0) => (code) => `\x1B[${code + offset}m`;
+  var wrapAnsi256 = (offset = 0) => (code) => `\x1B[${38 + offset};5;${code}m`;
+  var wrapAnsi16m = (offset = 0) => (red, green, blue) => `\x1B[${38 + offset};2;${red};${green};${blue}m`;
+  var styles = {
+    modifier: {
+      reset: [0, 0],
+      // 21 isn't widely supported and 22 does the same thing
+      bold: [1, 22],
+      dim: [2, 22],
+      italic: [3, 23],
+      underline: [4, 24],
+      overline: [53, 55],
+      inverse: [7, 27],
+      hidden: [8, 28],
+      strikethrough: [9, 29]
+    },
+    color: {
+      black: [30, 39],
+      red: [31, 39],
+      green: [32, 39],
+      yellow: [33, 39],
+      blue: [34, 39],
+      magenta: [35, 39],
+      cyan: [36, 39],
+      white: [37, 39],
+      // Bright color
+      blackBright: [90, 39],
+      gray: [90, 39],
+      // Alias of `blackBright`
+      grey: [90, 39],
+      // Alias of `blackBright`
+      redBright: [91, 39],
+      greenBright: [92, 39],
+      yellowBright: [93, 39],
+      blueBright: [94, 39],
+      magentaBright: [95, 39],
+      cyanBright: [96, 39],
+      whiteBright: [97, 39]
+    },
+    bgColor: {
+      bgBlack: [40, 49],
+      bgRed: [41, 49],
+      bgGreen: [42, 49],
+      bgYellow: [43, 49],
+      bgBlue: [44, 49],
+      bgMagenta: [45, 49],
+      bgCyan: [46, 49],
+      bgWhite: [47, 49],
+      // Bright color
+      bgBlackBright: [100, 49],
+      bgGray: [100, 49],
+      // Alias of `bgBlackBright`
+      bgGrey: [100, 49],
+      // Alias of `bgBlackBright`
+      bgRedBright: [101, 49],
+      bgGreenBright: [102, 49],
+      bgYellowBright: [103, 49],
+      bgBlueBright: [104, 49],
+      bgMagentaBright: [105, 49],
+      bgCyanBright: [106, 49],
+      bgWhiteBright: [107, 49]
+    }
+  };
+  var modifierNames = Object.keys(styles.modifier);
+  var foregroundColorNames = Object.keys(styles.color);
+  var backgroundColorNames = Object.keys(styles.bgColor);
+  var colorNames = [...foregroundColorNames, ...backgroundColorNames];
+  function assembleStyles() {
+    const codes = /* @__PURE__ */ new Map();
+    for (const [groupName, group] of Object.entries(styles)) {
+      for (const [styleName, style] of Object.entries(group)) {
+        styles[styleName] = {
+          open: `\x1B[${style[0]}m`,
+          close: `\x1B[${style[1]}m`
+        };
+        group[styleName] = styles[styleName];
+        codes.set(style[0], style[1]);
+      }
+      Object.defineProperty(styles, groupName, {
+        value: group,
+        enumerable: false
+      });
+    }
+    Object.defineProperty(styles, "codes", {
+      value: codes,
+      enumerable: false
+    });
+    styles.color.close = "\x1B[39m";
+    styles.bgColor.close = "\x1B[49m";
+    styles.color.ansi = wrapAnsi16();
+    styles.color.ansi256 = wrapAnsi256();
+    styles.color.ansi16m = wrapAnsi16m();
+    styles.bgColor.ansi = wrapAnsi16(ANSI_BACKGROUND_OFFSET);
+    styles.bgColor.ansi256 = wrapAnsi256(ANSI_BACKGROUND_OFFSET);
+    styles.bgColor.ansi16m = wrapAnsi16m(ANSI_BACKGROUND_OFFSET);
+    Object.defineProperties(styles, {
+      rgbToAnsi256: {
+        value(red, green, blue) {
+          if (red === green && green === blue) {
+            if (red < 8) {
+              return 16;
+            }
+            if (red > 248) {
+              return 231;
+            }
+            return Math.round((red - 8) / 247 * 24) + 232;
+          }
+          return 16 + 36 * Math.round(red / 255 * 5) + 6 * Math.round(green / 255 * 5) + Math.round(blue / 255 * 5);
+        },
+        enumerable: false
+      },
+      hexToRgb: {
+        value(hex) {
+          const matches = /[a-f\d]{6}|[a-f\d]{3}/i.exec(hex.toString(16));
+          if (!matches) {
+            return [0, 0, 0];
+          }
+          let [colorString] = matches;
+          if (colorString.length === 3) {
+            colorString = [...colorString].map((character) => character + character).join("");
+          }
+          const integer = Number.parseInt(colorString, 16);
+          return [
+            /* eslint-disable no-bitwise */
+            integer >> 16 & 255,
+            integer >> 8 & 255,
+            integer & 255
+            /* eslint-enable no-bitwise */
+          ];
+        },
+        enumerable: false
+      },
+      hexToAnsi256: {
+        value: (hex) => styles.rgbToAnsi256(...styles.hexToRgb(hex)),
+        enumerable: false
+      },
+      ansi256ToAnsi: {
+        value(code) {
+          if (code < 8) {
+            return 30 + code;
+          }
+          if (code < 16) {
+            return 90 + (code - 8);
+          }
+          let red;
+          let green;
+          let blue;
+          if (code >= 232) {
+            red = ((code - 232) * 10 + 8) / 255;
+            green = red;
+            blue = red;
+          } else {
+            code -= 16;
+            const remainder = code % 36;
+            red = Math.floor(code / 36) / 5;
+            green = Math.floor(remainder / 6) / 5;
+            blue = remainder % 6 / 5;
+          }
+          const value = Math.max(red, green, blue) * 2;
+          if (value === 0) {
+            return 30;
+          }
+          let result = 30 + (Math.round(blue) << 2 | Math.round(green) << 1 | Math.round(red));
+          if (value === 2) {
+            result += 60;
+          }
+          return result;
+        },
+        enumerable: false
+      },
+      rgbToAnsi: {
+        value: (red, green, blue) => styles.ansi256ToAnsi(styles.rgbToAnsi256(red, green, blue)),
+        enumerable: false
+      },
+      hexToAnsi: {
+        value: (hex) => styles.ansi256ToAnsi(styles.hexToAnsi256(hex)),
+        enumerable: false
+      }
+    });
+    return styles;
+  }
+  var ansiStyles = assembleStyles();
+  var ansi_styles_default = ansiStyles;
+
+  // dl-2.1.271-output/deps/node_modules/get-east-asian-width/lookup-data.js
+  var fullwidthMinimalCodePoint = 12288;
+  var fullwidthMaximumCodePoint = 65510;
+  var fullwidthRanges = [12288, 12288, 65281, 65376, 65504, 65510];
+  var wideMinimalCodePoint = 4352;
+  var wideMaximumCodePoint = 262141;
+  var wideRanges = [4352, 4447, 8986, 8987, 9001, 9002, 9193, 9196, 9200, 9200, 9203, 9203, 9725, 9726, 9748, 9749, 9776, 9783, 9800, 9811, 9855, 9855, 9866, 9871, 9875, 9875, 9889, 9889, 9898, 9899, 9917, 9918, 9924, 9925, 9934, 9934, 9940, 9940, 9962, 9962, 9970, 9971, 9973, 9973, 9978, 9978, 9981, 9981, 9989, 9989, 9994, 9995, 10024, 10024, 10060, 10060, 10062, 10062, 10067, 10069, 10071, 10071, 10133, 10135, 10160, 10160, 10175, 10175, 11035, 11036, 11088, 11088, 11093, 11093, 11904, 11929, 11931, 12019, 12032, 12245, 12272, 12287, 12289, 12350, 12353, 12438, 12441, 12543, 12549, 12591, 12593, 12686, 12688, 12773, 12783, 12830, 12832, 12871, 12880, 42124, 42128, 42182, 43360, 43388, 44032, 55203, 63744, 64255, 65040, 65049, 65072, 65106, 65108, 65126, 65128, 65131, 94176, 94180, 94192, 94198, 94208, 101589, 101631, 101662, 101760, 101874, 110576, 110579, 110581, 110587, 110589, 110590, 110592, 110882, 110898, 110898, 110928, 110930, 110933, 110933, 110948, 110951, 110960, 111355, 119552, 119638, 119648, 119670, 126980, 126980, 127183, 127183, 127374, 127374, 127377, 127386, 127488, 127490, 127504, 127547, 127552, 127560, 127568, 127569, 127584, 127589, 127744, 127776, 127789, 127797, 127799, 127868, 127870, 127891, 127904, 127946, 127951, 127955, 127968, 127984, 127988, 127988, 127992, 128062, 128064, 128064, 128066, 128252, 128255, 128317, 128331, 128334, 128336, 128359, 128378, 128378, 128405, 128406, 128420, 128420, 128507, 128591, 128640, 128709, 128716, 128716, 128720, 128722, 128725, 128728, 128732, 128735, 128747, 128748, 128756, 128764, 128992, 129003, 129008, 129008, 129292, 129338, 129340, 129349, 129351, 129535, 129648, 129660, 129664, 129674, 129678, 129734, 129736, 129736, 129741, 129756, 129759, 129770, 129775, 129784, 131072, 196605, 196608, 262141];
+
+  // dl-2.1.271-output/deps/node_modules/get-east-asian-width/utilities.js
+  var isInRange = (ranges, codePoint) => {
+    let low = 0;
+    let high = Math.floor(ranges.length / 2) - 1;
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      const i = mid * 2;
+      if (codePoint < ranges[i]) {
+        high = mid - 1;
+      } else if (codePoint > ranges[i + 1]) {
+        low = mid + 1;
+      } else {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  // dl-2.1.271-output/deps/node_modules/get-east-asian-width/lookup.js
+  var commonCjkCodePoint = 19968;
+  var [wideFastPathStart, wideFastPathEnd] = /* @__PURE__ */ findWideFastPathRange(wideRanges);
+  function findWideFastPathRange(ranges) {
+    let fastPathStart = ranges[0];
+    let fastPathEnd = ranges[1];
+    for (let index = 0; index < ranges.length; index += 2) {
+      const start = ranges[index];
+      const end = ranges[index + 1];
+      if (commonCjkCodePoint >= start && commonCjkCodePoint <= end) {
+        return [start, end];
+      }
+      if (end - start > fastPathEnd - fastPathStart) {
+        fastPathStart = start;
+        fastPathEnd = end;
+      }
+    }
+    return [fastPathStart, fastPathEnd];
+  }
+  var isFullWidth = (codePoint) => {
+    if (codePoint < fullwidthMinimalCodePoint || codePoint > fullwidthMaximumCodePoint) {
+      return false;
+    }
+    return isInRange(fullwidthRanges, codePoint);
+  };
+  var isWide = (codePoint) => {
+    if (codePoint >= wideFastPathStart && codePoint <= wideFastPathEnd) {
+      return true;
+    }
+    if (codePoint < wideMinimalCodePoint || codePoint > wideMaximumCodePoint) {
+      return false;
+    }
+    return isInRange(wideRanges, codePoint);
+  };
+
+  // dl-2.1.271-output/deps/node_modules/is-fullwidth-code-point/index.js
+  function isFullwidthCodePoint(codePoint) {
+    if (!Number.isInteger(codePoint)) {
+      return false;
+    }
+    return isFullWidth(codePoint) || isWide(codePoint);
+  }
+
+  // dl-2.1.271-output/deps/node_modules/slice-ansi/tokenize-ansi.js
+  var ESCAPE_CODE_POINT = 27;
+  var C1_DCS_CODE_POINT = 144;
+  var C1_SOS_CODE_POINT = 152;
+  var C1_CSI_CODE_POINT = 155;
+  var C1_ST_CODE_POINT = 156;
+  var C1_OSC_CODE_POINT = 157;
+  var C1_PM_CODE_POINT = 158;
+  var C1_APC_CODE_POINT = 159;
+  var ESCAPES = /* @__PURE__ */ new Set([
+    ESCAPE_CODE_POINT,
+    C1_DCS_CODE_POINT,
+    C1_SOS_CODE_POINT,
+    C1_CSI_CODE_POINT,
+    C1_ST_CODE_POINT,
+    C1_OSC_CODE_POINT,
+    C1_PM_CODE_POINT,
+    C1_APC_CODE_POINT
+  ]);
+  var ESCAPE = "\x1B";
+  var ANSI_BELL = "\x07";
+  var ANSI_CSI = "[";
+  var ANSI_OSC = "]";
+  var ANSI_DCS = "P";
+  var ANSI_SOS = "X";
+  var ANSI_PM = "^";
+  var ANSI_APC = "_";
+  var ANSI_SGR_TERMINATOR = "m";
+  var ANSI_OSC_TERMINATOR = "\\";
+  var ANSI_STRING_TERMINATOR = `${ESCAPE}${ANSI_OSC_TERMINATOR}`;
+  var C1_OSC = "\x9D";
+  var C1_STRING_TERMINATOR = "\x9C";
+  var ANSI_HYPERLINK_ESC_PREFIX = `${ESCAPE}${ANSI_OSC}8;`;
+  var ANSI_HYPERLINK_C1_PREFIX = `${C1_OSC}8;`;
+  var ANSI_HYPERLINK_ESC_CLOSE = `${ANSI_HYPERLINK_ESC_PREFIX};`;
+  var ANSI_HYPERLINK_C1_CLOSE = `${ANSI_HYPERLINK_C1_PREFIX};`;
+  var CODE_POINT_0 = "0".codePointAt(0);
+  var CODE_POINT_9 = "9".codePointAt(0);
+  var CODE_POINT_SEMICOLON = ";".codePointAt(0);
+  var CODE_POINT_COLON = ":".codePointAt(0);
+  var CODE_POINT_CSI_PARAMETER_START = "0".codePointAt(0);
+  var CODE_POINT_CSI_PARAMETER_END = "?".codePointAt(0);
+  var CODE_POINT_CSI_INTERMEDIATE_START = " ".codePointAt(0);
+  var CODE_POINT_CSI_INTERMEDIATE_END = "/".codePointAt(0);
+  var CODE_POINT_CSI_FINAL_START = "@".codePointAt(0);
+  var CODE_POINT_CSI_FINAL_END = "~".codePointAt(0);
+  var REGIONAL_INDICATOR_SYMBOL_LETTER_A = 127462;
+  var REGIONAL_INDICATOR_SYMBOL_LETTER_Z = 127487;
+  var SGR_RESET_CODE = 0;
+  var SGR_EXTENDED_FOREGROUND_CODE = 38;
+  var SGR_DEFAULT_FOREGROUND_CODE = 39;
+  var SGR_EXTENDED_BACKGROUND_CODE = 48;
+  var SGR_DEFAULT_BACKGROUND_CODE = 49;
+  var SGR_COLOR_TYPE_ANSI_256 = 5;
+  var SGR_COLOR_TYPE_TRUECOLOR = 2;
+  var SGR_ANSI_256_FRAGMENT_LENGTH = 3;
+  var SGR_TRUECOLOR_FRAGMENT_LENGTH = 5;
+  var SGR_ANSI_256_LAST_PARAMETER_OFFSET = 2;
+  var SGR_TRUECOLOR_LAST_PARAMETER_OFFSET = 4;
+  var VARIATION_SELECTOR_16_CODE_POINT = 65039;
+  var COMBINING_ENCLOSING_KEYCAP_CODE_POINT = 8419;
+  var EMOJI_PRESENTATION_GRAPHEME_REGEX = new RegExp("\\p{Emoji_Presentation}", "v");
+  var GRAPHEME_SEGMENTER = new Intl.Segmenter(void 0, { granularity: "grapheme" });
+  var endCodeNumbers = /* @__PURE__ */ new Set();
+  for (const [, end] of ansi_styles_default.codes) {
+    endCodeNumbers.add(end);
+  }
+  function isSgrParameterCharacter(codePoint) {
+    return codePoint >= CODE_POINT_0 && codePoint <= CODE_POINT_9 || codePoint === CODE_POINT_SEMICOLON || codePoint === CODE_POINT_COLON;
+  }
+  function isCsiParameterCharacter(codePoint) {
+    return codePoint >= CODE_POINT_CSI_PARAMETER_START && codePoint <= CODE_POINT_CSI_PARAMETER_END;
+  }
+  function isCsiIntermediateCharacter(codePoint) {
+    return codePoint >= CODE_POINT_CSI_INTERMEDIATE_START && codePoint <= CODE_POINT_CSI_INTERMEDIATE_END;
+  }
+  function isCsiFinalCharacter(codePoint) {
+    return codePoint >= CODE_POINT_CSI_FINAL_START && codePoint <= CODE_POINT_CSI_FINAL_END;
+  }
+  function isRegionalIndicatorCodePoint(codePoint) {
+    return codePoint >= REGIONAL_INDICATOR_SYMBOL_LETTER_A && codePoint <= REGIONAL_INDICATOR_SYMBOL_LETTER_Z;
+  }
+  function createControlParseResult(code, endIndex) {
+    return {
+      token: {
+        type: "control",
+        code
+      },
+      endIndex
+    };
+  }
+  function isEmojiStyleGrapheme(grapheme) {
+    if (EMOJI_PRESENTATION_GRAPHEME_REGEX.test(grapheme)) {
+      return true;
+    }
+    for (const character of grapheme) {
+      const codePoint = character.codePointAt(0);
+      if (codePoint === VARIATION_SELECTOR_16_CODE_POINT || codePoint === COMBINING_ENCLOSING_KEYCAP_CODE_POINT) {
+        return true;
+      }
+    }
+    return false;
+  }
+  function getGraphemeWidth(grapheme) {
+    let regionalIndicatorCount = 0;
+    for (const character of grapheme) {
+      const codePoint = character.codePointAt(0);
+      if (isFullwidthCodePoint(codePoint)) {
+        return 2;
+      }
+      if (isRegionalIndicatorCodePoint(codePoint)) {
+        regionalIndicatorCount++;
+      }
+    }
+    if (regionalIndicatorCount >= 1) {
+      return 2;
+    }
+    if (isEmojiStyleGrapheme(grapheme)) {
+      return 2;
+    }
+    return 1;
+  }
+  function getSgrPrefix(code) {
+    if (code.startsWith("\x9B")) {
+      return "\x9B";
+    }
+    return `${ESCAPE}${ANSI_CSI}`;
+  }
+  function createSgrCode(prefix, values) {
+    return `${prefix}${values.join(";")}${ANSI_SGR_TERMINATOR}`;
+  }
+  function getSgrFragments(code) {
+    const fragments = [];
+    const sgrPrefix = getSgrPrefix(code);
+    let parameterString;
+    if (code.startsWith(`${ESCAPE}${ANSI_CSI}`)) {
+      parameterString = code.slice(2, -1);
+    } else if (code.startsWith("\x9B")) {
+      parameterString = code.slice(1, -1);
+    } else {
+      return fragments;
+    }
+    const rawCodes = parameterString.length === 0 ? [String(SGR_RESET_CODE)] : parameterString.split(";");
+    let index = 0;
+    while (index < rawCodes.length) {
+      const codeNumber = Number.parseInt(rawCodes[index], 10);
+      if (Number.isNaN(codeNumber)) {
+        index++;
+        continue;
+      }
+      if (codeNumber === SGR_RESET_CODE) {
+        fragments.push({ type: "reset" });
+        index++;
+        continue;
+      }
+      if (codeNumber === SGR_EXTENDED_FOREGROUND_CODE || codeNumber === SGR_EXTENDED_BACKGROUND_CODE) {
+        const colorType = Number.parseInt(rawCodes[index + 1], 10);
+        if (colorType === SGR_COLOR_TYPE_ANSI_256 && index + SGR_ANSI_256_LAST_PARAMETER_OFFSET < rawCodes.length) {
+          const openCode3 = createSgrCode(sgrPrefix, rawCodes.slice(index, index + SGR_ANSI_256_FRAGMENT_LENGTH));
+          fragments.push({
+            type: "start",
+            code: openCode3,
+            endCode: ansi_styles_default.color.ansi(codeNumber === SGR_EXTENDED_FOREGROUND_CODE ? SGR_DEFAULT_FOREGROUND_CODE : SGR_DEFAULT_BACKGROUND_CODE)
+          });
+          index += SGR_ANSI_256_FRAGMENT_LENGTH;
+          continue;
+        }
+        if (colorType === SGR_COLOR_TYPE_TRUECOLOR && index + SGR_TRUECOLOR_LAST_PARAMETER_OFFSET < rawCodes.length) {
+          const openCode3 = createSgrCode(sgrPrefix, rawCodes.slice(index, index + SGR_TRUECOLOR_FRAGMENT_LENGTH));
+          fragments.push({
+            type: "start",
+            code: openCode3,
+            endCode: ansi_styles_default.color.ansi(codeNumber === SGR_EXTENDED_FOREGROUND_CODE ? SGR_DEFAULT_FOREGROUND_CODE : SGR_DEFAULT_BACKGROUND_CODE)
+          });
+          index += SGR_TRUECOLOR_FRAGMENT_LENGTH;
+          continue;
+        }
+        const openCode2 = createSgrCode(sgrPrefix, [rawCodes[index]]);
+        fragments.push({
+          type: "start",
+          code: openCode2,
+          endCode: ansi_styles_default.color.ansi(codeNumber === SGR_EXTENDED_FOREGROUND_CODE ? SGR_DEFAULT_FOREGROUND_CODE : SGR_DEFAULT_BACKGROUND_CODE)
+        });
+        index++;
+        continue;
+      }
+      if (endCodeNumbers.has(codeNumber)) {
+        fragments.push({
+          type: "end",
+          endCode: ansi_styles_default.color.ansi(codeNumber)
+        });
+        index++;
+        continue;
+      }
+      const mappedEndCode = ansi_styles_default.codes.get(codeNumber);
+      if (mappedEndCode !== void 0) {
+        const openCode2 = createSgrCode(sgrPrefix, [rawCodes[index]]);
+        fragments.push({
+          type: "start",
+          code: openCode2,
+          endCode: ansi_styles_default.color.ansi(mappedEndCode)
+        });
+        index++;
+        continue;
+      }
+      const openCode = createSgrCode(sgrPrefix, [rawCodes[index]]);
+      fragments.push({
+        type: "start",
+        code: openCode,
+        endCode: ansi_styles_default.reset.open
+      });
+      index++;
+    }
+    if (fragments.length === 0) {
+      fragments.push({ type: "reset" });
+    }
+    return fragments;
+  }
+  function parseCsiCode(string, index) {
+    const escapeCodePoint = string.codePointAt(index);
+    let sequenceStartIndex;
+    if (escapeCodePoint === ESCAPE_CODE_POINT) {
+      if (string[index + 1] !== ANSI_CSI) {
+        return;
+      }
+      sequenceStartIndex = index + 2;
+    } else if (escapeCodePoint === C1_CSI_CODE_POINT) {
+      sequenceStartIndex = index + 1;
+    } else {
+      return;
+    }
+    let hasCanonicalSgrParameters = true;
+    for (let sequenceIndex = sequenceStartIndex; sequenceIndex < string.length; sequenceIndex++) {
+      const codePoint = string.codePointAt(sequenceIndex);
+      if (isCsiFinalCharacter(codePoint)) {
+        const code = string.slice(index, sequenceIndex + 1);
+        if (string[sequenceIndex] !== ANSI_SGR_TERMINATOR || !hasCanonicalSgrParameters) {
+          return createControlParseResult(code, sequenceIndex + 1);
+        }
+        return {
+          token: {
+            type: "sgr",
+            code,
+            fragments: getSgrFragments(code)
+          },
+          endIndex: sequenceIndex + 1
+        };
+      }
+      if (isCsiParameterCharacter(codePoint)) {
+        if (!isSgrParameterCharacter(codePoint)) {
+          hasCanonicalSgrParameters = false;
+        }
+        continue;
+      }
+      if (isCsiIntermediateCharacter(codePoint)) {
+        hasCanonicalSgrParameters = false;
+        continue;
+      }
+      const endIndex = sequenceIndex;
+      return createControlParseResult(string.slice(index, endIndex), endIndex);
+    }
+    return createControlParseResult(string.slice(index), string.length);
+  }
+  function parseHyperlinkCode(string, index) {
+    let hyperlinkPrefix;
+    let hyperlinkClose;
+    const codePoint = string.codePointAt(index);
+    if (codePoint === ESCAPE_CODE_POINT && string.startsWith(ANSI_HYPERLINK_ESC_PREFIX, index)) {
+      hyperlinkPrefix = ANSI_HYPERLINK_ESC_PREFIX;
+      hyperlinkClose = ANSI_HYPERLINK_ESC_CLOSE;
+    } else if (codePoint === C1_OSC_CODE_POINT && string.startsWith(ANSI_HYPERLINK_C1_PREFIX, index)) {
+      hyperlinkPrefix = ANSI_HYPERLINK_C1_PREFIX;
+      hyperlinkClose = ANSI_HYPERLINK_C1_CLOSE;
+    } else {
+      return;
+    }
+    const uriStart = string.indexOf(";", index + hyperlinkPrefix.length);
+    if (uriStart === -1) {
+      return createControlParseResult(string.slice(index), string.length);
+    }
+    for (let sequenceIndex = uriStart + 1; sequenceIndex < string.length; sequenceIndex++) {
+      const character = string[sequenceIndex];
+      if (character === ANSI_BELL) {
+        const code = string.slice(index, sequenceIndex + 1);
+        const action = sequenceIndex === uriStart + 1 ? "close" : "open";
+        return {
+          token: {
+            type: "hyperlink",
+            code,
+            action,
+            closePrefix: hyperlinkClose,
+            terminator: ANSI_BELL
+          },
+          endIndex: sequenceIndex + 1
+        };
+      }
+      if (character === ESCAPE && string[sequenceIndex + 1] === ANSI_OSC_TERMINATOR) {
+        const code = string.slice(index, sequenceIndex + 2);
+        const action = sequenceIndex === uriStart + 1 ? "close" : "open";
+        return {
+          token: {
+            type: "hyperlink",
+            code,
+            action,
+            closePrefix: hyperlinkClose,
+            terminator: ANSI_STRING_TERMINATOR
+          },
+          endIndex: sequenceIndex + 2
+        };
+      }
+      if (character === C1_STRING_TERMINATOR) {
+        const code = string.slice(index, sequenceIndex + 1);
+        const action = sequenceIndex === uriStart + 1 ? "close" : "open";
+        return {
+          token: {
+            type: "hyperlink",
+            code,
+            action,
+            closePrefix: hyperlinkClose,
+            terminator: C1_STRING_TERMINATOR
+          },
+          endIndex: sequenceIndex + 1
+        };
+      }
+    }
+    return createControlParseResult(string.slice(index), string.length);
+  }
+  function parseControlStringCode(string, index) {
+    const codePoint = string.codePointAt(index);
+    let sequenceStartIndex;
+    let supportsBellTerminator = false;
+    switch (codePoint) {
+      case ESCAPE_CODE_POINT: {
+        const command = string[index + 1];
+        switch (command) {
+          case ANSI_OSC: {
+            sequenceStartIndex = index + 2;
+            supportsBellTerminator = true;
+            break;
+          }
+          case ANSI_DCS:
+          case ANSI_SOS:
+          case ANSI_PM:
+          case ANSI_APC: {
+            sequenceStartIndex = index + 2;
+            break;
+          }
+          case ANSI_OSC_TERMINATOR: {
+            return createControlParseResult(ANSI_STRING_TERMINATOR, index + 2);
+          }
+          default: {
+            return;
+          }
+        }
+        break;
+      }
+      case C1_OSC_CODE_POINT: {
+        sequenceStartIndex = index + 1;
+        supportsBellTerminator = true;
+        break;
+      }
+      case C1_DCS_CODE_POINT:
+      case C1_SOS_CODE_POINT:
+      case C1_PM_CODE_POINT:
+      case C1_APC_CODE_POINT: {
+        sequenceStartIndex = index + 1;
+        break;
+      }
+      case C1_ST_CODE_POINT: {
+        return createControlParseResult(C1_STRING_TERMINATOR, index + 1);
+      }
+      default: {
+        return;
+      }
+    }
+    for (let sequenceIndex = sequenceStartIndex; sequenceIndex < string.length; sequenceIndex++) {
+      if (supportsBellTerminator && string[sequenceIndex] === ANSI_BELL) {
+        return createControlParseResult(string.slice(index, sequenceIndex + 1), sequenceIndex + 1);
+      }
+      if (string[sequenceIndex] === ESCAPE && string[sequenceIndex + 1] === ANSI_OSC_TERMINATOR) {
+        return createControlParseResult(string.slice(index, sequenceIndex + 2), sequenceIndex + 2);
+      }
+      if (string[sequenceIndex] === C1_STRING_TERMINATOR) {
+        return createControlParseResult(string.slice(index, sequenceIndex + 1), sequenceIndex + 1);
+      }
+    }
+    return createControlParseResult(string.slice(index), string.length);
+  }
+  function parseAnsiCode(string, index) {
+    const codePoint = string.codePointAt(index);
+    if (codePoint === ESCAPE_CODE_POINT || codePoint === C1_OSC_CODE_POINT) {
+      const hyperlinkCode = parseHyperlinkCode(string, index);
+      if (hyperlinkCode) {
+        return hyperlinkCode;
+      }
+    }
+    const controlStringCode = parseControlStringCode(string, index);
+    if (controlStringCode) {
+      return controlStringCode;
+    }
+    return parseCsiCode(string, index);
+  }
+  function appendTrailingAnsiTokens(string, index, tokens) {
+    while (index < string.length) {
+      const nextCodePoint = string.codePointAt(index);
+      if (!ESCAPES.has(nextCodePoint)) {
+        break;
+      }
+      const escapeCode = parseAnsiCode(string, index);
+      if (!escapeCode) {
+        break;
+      }
+      tokens.push(escapeCode.token);
+      index = escapeCode.endIndex;
+    }
+    return index;
+  }
+  function parseCharacterTokenWithRawSegmentation(string, index, graphemeSegments) {
+    const segment = graphemeSegments.containing(index);
+    if (!segment || segment.index !== index) {
+      return;
+    }
+    return {
+      token: {
+        type: "character",
+        // Intentionally preserve UAX29 behavior (GB3): CRLF is one grapheme cluster.
+        value: segment.segment,
+        visibleWidth: getGraphemeWidth(segment.segment),
+        isGraphemeContinuation: false
+      },
+      endIndex: index + segment.segment.length
+    };
+  }
+  function collectVisibleCharacters(string) {
+    const visibleCharacters = [];
+    let index = 0;
+    while (index < string.length) {
+      const codePoint = string.codePointAt(index);
+      if (ESCAPES.has(codePoint)) {
+        const code = parseAnsiCode(string, index);
+        if (code) {
+          index = code.endIndex;
+          continue;
+        }
+      }
+      const value = String.fromCodePoint(codePoint);
+      visibleCharacters.push({
+        value,
+        visibleWidth: 1,
+        isGraphemeContinuation: false
+      });
+      index += value.length;
+    }
+    return visibleCharacters;
+  }
+  function applyGraphemeMetadata(visibleCharacters) {
+    if (visibleCharacters.length === 0) {
+      return;
+    }
+    const visibleString = visibleCharacters.map(({ value }) => value).join("");
+    const scalarOffsets = [];
+    let scalarOffset = 0;
+    for (const visibleCharacter of visibleCharacters) {
+      scalarOffsets.push(scalarOffset);
+      scalarOffset += visibleCharacter.value.length;
+    }
+    let scalarIndex = 0;
+    for (const segment of GRAPHEME_SEGMENTER.segment(visibleString)) {
+      while (scalarIndex < visibleCharacters.length && scalarOffsets[scalarIndex] < segment.index) {
+        scalarIndex++;
+      }
+      let graphemeIndex = scalarIndex;
+      let isFirstInGrapheme = true;
+      while (graphemeIndex < visibleCharacters.length && scalarOffsets[graphemeIndex] < segment.index + segment.segment.length) {
+        visibleCharacters[graphemeIndex].visibleWidth = isFirstInGrapheme ? getGraphemeWidth(segment.segment) : 0;
+        visibleCharacters[graphemeIndex].isGraphemeContinuation = !isFirstInGrapheme;
+        isFirstInGrapheme = false;
+        graphemeIndex++;
+      }
+      scalarIndex = graphemeIndex;
+    }
+  }
+  function tokenizeAnsiWithVisibleSegmentation(string, { endCharacter = Number.POSITIVE_INFINITY } = {}) {
+    const tokens = [];
+    const visibleCharacters = collectVisibleCharacters(string);
+    applyGraphemeMetadata(visibleCharacters);
+    let index = 0;
+    let visibleCharacterIndex = 0;
+    let visibleCount = 0;
+    while (index < string.length) {
+      const codePoint = string.codePointAt(index);
+      if (ESCAPES.has(codePoint)) {
+        const code = parseAnsiCode(string, index);
+        if (code) {
+          tokens.push(code.token);
+          index = code.endIndex;
+          continue;
+        }
+      }
+      const value = String.fromCodePoint(codePoint);
+      const visibleCharacter = visibleCharacters[visibleCharacterIndex];
+      let visibleWidth = isFullwidthCodePoint(codePoint) ? 2 : value.length;
+      if (visibleCharacter) {
+        visibleWidth = visibleCharacter.visibleWidth;
+      }
+      const token = {
+        type: "character",
+        value,
+        visibleWidth,
+        isGraphemeContinuation: visibleCharacter ? visibleCharacter.isGraphemeContinuation : false
+      };
+      tokens.push(token);
+      index += value.length;
+      visibleCharacterIndex++;
+      visibleCount += token.visibleWidth;
+      if (visibleCount >= endCharacter) {
+        const nextVisibleCharacter = visibleCharacters[visibleCharacterIndex];
+        if (!nextVisibleCharacter || !nextVisibleCharacter.isGraphemeContinuation) {
+          index = appendTrailingAnsiTokens(string, index, tokens);
+          break;
+        }
+      }
+    }
+    return tokens;
+  }
+  function areValuesInSameGrapheme(leftValue, rightValue) {
+    const pair = `${leftValue}${rightValue}`;
+    const splitIndex = leftValue.length;
+    for (const segment of GRAPHEME_SEGMENTER.segment(pair)) {
+      if (segment.index === splitIndex) {
+        return false;
+      }
+      if (segment.index > splitIndex) {
+        return true;
+      }
+    }
+    return true;
+  }
+  function hasAnsiSplitContinuationAhead(string, startIndex, previousVisibleValue, graphemeSegments) {
+    if (!previousVisibleValue) {
+      return false;
+    }
+    let index = startIndex;
+    let hasAnsiCode = false;
+    while (index < string.length) {
+      const codePoint = string.codePointAt(index);
+      if (ESCAPES.has(codePoint)) {
+        const code = parseAnsiCode(string, index);
+        if (code) {
+          hasAnsiCode = true;
+          index = code.endIndex;
+          continue;
+        }
+      }
+      if (!hasAnsiCode) {
+        return false;
+      }
+      const characterToken = parseCharacterTokenWithRawSegmentation(string, index, graphemeSegments);
+      if (!characterToken) {
+        return true;
+      }
+      return areValuesInSameGrapheme(previousVisibleValue, characterToken.token.value);
+    }
+    return false;
+  }
+  function tokenizeAnsi(string, { endCharacter = Number.POSITIVE_INFINITY } = {}) {
+    const tokens = [];
+    const graphemeSegments = GRAPHEME_SEGMENTER.segment(string);
+    let index = 0;
+    let visibleCount = 0;
+    let previousVisibleValue;
+    let hasAnsiSinceLastVisible = false;
+    while (index < string.length) {
+      const codePoint = string.codePointAt(index);
+      if (ESCAPES.has(codePoint)) {
+        const code = parseAnsiCode(string, index);
+        if (code) {
+          tokens.push(code.token);
+          index = code.endIndex;
+          hasAnsiSinceLastVisible = true;
+          continue;
+        }
+      }
+      const characterToken = parseCharacterTokenWithRawSegmentation(string, index, graphemeSegments);
+      if (!characterToken) {
+        return tokenizeAnsiWithVisibleSegmentation(string, { endCharacter });
+      }
+      if (hasAnsiSinceLastVisible && previousVisibleValue && areValuesInSameGrapheme(previousVisibleValue, characterToken.token.value)) {
+        return tokenizeAnsiWithVisibleSegmentation(string, { endCharacter });
+      }
+      tokens.push(characterToken.token);
+      index = characterToken.endIndex;
+      visibleCount += characterToken.token.visibleWidth;
+      hasAnsiSinceLastVisible = false;
+      previousVisibleValue = characterToken.token.value;
+      if (visibleCount >= endCharacter) {
+        if (hasAnsiSplitContinuationAhead(string, index, previousVisibleValue, graphemeSegments)) {
+          return tokenizeAnsiWithVisibleSegmentation(string, { endCharacter });
+        }
+        index = appendTrailingAnsiTokens(string, index, tokens);
+        break;
+      }
+    }
+    return tokens;
+  }
+
+  // dl-2.1.271-output/deps/node_modules/slice-ansi/index.js
+  function applySgrFragments(activeStyles, fragments) {
+    for (const fragment of fragments) {
+      switch (fragment.type) {
+        case "reset": {
+          activeStyles.clear();
+          break;
+        }
+        case "end": {
+          activeStyles.delete(fragment.endCode);
+          break;
+        }
+        case "start": {
+          activeStyles.delete(fragment.endCode);
+          activeStyles.set(fragment.endCode, fragment.code);
+          break;
+        }
+        default: {
+          break;
+        }
+      }
+    }
+    return activeStyles;
+  }
+  function undoAnsiCodes(activeStyles) {
+    return [...activeStyles.keys()].toReversed().join("");
+  }
+  function closeHyperlink(hyperlinkToken) {
+    return `${hyperlinkToken.closePrefix}${hyperlinkToken.terminator}`;
+  }
+  function shouldIncludeSgrAfterEnd(token, activeStyles) {
+    let hasStartFragment = false;
+    let hasClosingEffect = false;
+    for (const fragment of token.fragments) {
+      if (fragment.type === "start") {
+        hasStartFragment = true;
+        continue;
+      }
+      if (fragment.type === "reset" && activeStyles.size > 0) {
+        hasClosingEffect = true;
+        continue;
+      }
+      if (fragment.type === "end" && activeStyles.has(fragment.endCode)) {
+        hasClosingEffect = true;
+      }
+    }
+    return hasClosingEffect && !hasStartFragment;
+  }
+  function hasSgrStartFragment(token) {
+    return token.fragments.some((fragment) => fragment.type === "start");
+  }
+  function discardPendingHyperlink(parameters) {
+    if (parameters.activeHyperlink && !parameters.activeHyperlinkHasVisibleText && parameters.activeHyperlinkOutputIndex !== void 0) {
+      const openCodeLength = parameters.activeHyperlink.code.length;
+      parameters.returnValue = parameters.returnValue.slice(0, parameters.activeHyperlinkOutputIndex) + parameters.returnValue.slice(parameters.activeHyperlinkOutputIndex + openCodeLength);
+      if (parameters.pendingSgrOutputIndex !== void 0 && parameters.pendingSgrOutputIndex > parameters.activeHyperlinkOutputIndex) {
+        parameters.pendingSgrOutputIndex -= openCodeLength;
+      }
+    }
+    parameters.activeHyperlink = void 0;
+    parameters.activeHyperlinkHasVisibleText = false;
+    parameters.activeHyperlinkOutputIndex = void 0;
+  }
+  function applySgrToken(parameters) {
+    if (parameters.isPastEnd && !shouldIncludeSgrAfterEnd(parameters.token, parameters.activeStyles)) {
+      return parameters;
+    }
+    if (parameters.include && hasSgrStartFragment(parameters.token) && parameters.pendingSgrOutputIndex === void 0) {
+      parameters.pendingSgrOutputIndex = parameters.returnValue.length;
+      parameters.pendingSgrActiveStyles = new Map(parameters.activeStyles);
+    }
+    parameters.activeStyles = applySgrFragments(parameters.activeStyles, parameters.token.fragments);
+    if (parameters.include) {
+      parameters.returnValue += parameters.token.code;
+    }
+    return parameters;
+  }
+  function applyHyperlinkToken(parameters) {
+    if (parameters.isPastEnd && (parameters.token.action !== "close" || !parameters.activeHyperlink)) {
+      return parameters;
+    }
+    if (parameters.token.action === "open") {
+      parameters.activeHyperlink = parameters.token;
+      parameters.activeHyperlinkHasVisibleText = false;
+      parameters.activeHyperlinkOutputIndex = void 0;
+      if (parameters.include) {
+        parameters.activeHyperlinkOutputIndex = parameters.returnValue.length;
+      }
+    } else if (parameters.token.action === "close") {
+      if (parameters.include && parameters.activeHyperlink && !parameters.activeHyperlinkHasVisibleText) {
+        discardPendingHyperlink(parameters);
+        return parameters;
+      }
+      parameters.activeHyperlink = void 0;
+      parameters.activeHyperlinkHasVisibleText = false;
+      parameters.activeHyperlinkOutputIndex = void 0;
+    }
+    if (parameters.include) {
+      parameters.returnValue += parameters.token.code;
+    }
+    return parameters;
+  }
+  function applyControlToken(parameters) {
+    if (!parameters.isPastEnd && parameters.include) {
+      parameters.returnValue += parameters.token.code;
+    }
+    return parameters;
+  }
+  function applyCharacterToken(parameters) {
+    if (!parameters.include && parameters.position >= parameters.start && !parameters.token.isGraphemeContinuation) {
+      parameters.include = true;
+      parameters.returnValue = [...parameters.activeStyles.values()].join("");
+      if (parameters.activeHyperlink) {
+        parameters.activeHyperlinkOutputIndex = parameters.returnValue.length;
+        parameters.returnValue += parameters.activeHyperlink.code;
+      }
+    }
+    if (parameters.include) {
+      parameters.returnValue += parameters.token.value;
+      parameters.pendingSgrOutputIndex = void 0;
+      parameters.pendingSgrActiveStyles = void 0;
+      if (parameters.activeHyperlink) {
+        parameters.activeHyperlinkHasVisibleText = true;
+      }
+    }
+    parameters.position += parameters.token.visibleWidth;
+    return parameters;
+  }
+  var tokenHandlers = {
+    sgr: applySgrToken,
+    hyperlink: applyHyperlinkToken,
+    control: applyControlToken,
+    character: applyCharacterToken
+  };
+  function applyToken(parameters) {
+    const tokenHandler = tokenHandlers[parameters.token.type];
+    if (!tokenHandler) {
+      return parameters;
+    }
+    return tokenHandler(parameters);
+  }
+  function createHasContinuationAheadMap(tokens) {
+    const hasContinuationAhead = Array.from({ length: tokens.length }, () => false);
+    let nextCharacterIsContinuation = false;
+    for (let tokenIndex = tokens.length - 1; tokenIndex >= 0; tokenIndex--) {
+      const token = tokens[tokenIndex];
+      hasContinuationAhead[tokenIndex] = nextCharacterIsContinuation;
+      if (token.type === "character") {
+        nextCharacterIsContinuation = Boolean(token.isGraphemeContinuation);
+      }
+    }
+    return hasContinuationAhead;
+  }
+  function isPastEndBoundary(token, position, end) {
+    if (end === void 0) {
+      return false;
+    }
+    if (position >= end) {
+      return true;
+    }
+    return token.type === "character" && !token.isGraphemeContinuation && position + token.visibleWidth > end;
+  }
+  function sliceAnsi(string, start, end) {
+    const tokens = tokenizeAnsi(string, { endCharacter: end });
+    const hasContinuationAhead = createHasContinuationAheadMap(tokens);
+    let activeStyles = /* @__PURE__ */ new Map();
+    let activeHyperlink;
+    let activeHyperlinkHasVisibleText = false;
+    let activeHyperlinkOutputIndex;
+    let pendingSgrOutputIndex;
+    let pendingSgrActiveStyles;
+    let position = 0;
+    let returnValue = "";
+    let include = false;
+    for (const [tokenIndex, token] of tokens.entries()) {
+      let isPastEnd = isPastEndBoundary(token, position, end);
+      if (isPastEnd && token.type !== "character" && hasContinuationAhead[tokenIndex]) {
+        isPastEnd = false;
+      }
+      if (isPastEnd && token.type === "character" && !token.isGraphemeContinuation) {
+        if (activeHyperlink && !activeHyperlinkHasVisibleText) {
+          const hyperlinkState = {
+            activeHyperlink,
+            activeHyperlinkHasVisibleText,
+            activeHyperlinkOutputIndex,
+            pendingSgrOutputIndex,
+            returnValue
+          };
+          discardPendingHyperlink(hyperlinkState);
+          ({
+            activeHyperlink,
+            activeHyperlinkHasVisibleText,
+            activeHyperlinkOutputIndex,
+            pendingSgrOutputIndex,
+            returnValue
+          } = hyperlinkState);
+        }
+        if (pendingSgrOutputIndex !== void 0) {
+          returnValue = returnValue.slice(0, pendingSgrOutputIndex);
+          activeStyles = pendingSgrActiveStyles;
+          pendingSgrOutputIndex = void 0;
+          pendingSgrActiveStyles = void 0;
+        }
+        break;
+      }
+      ({ activeStyles, activeHyperlink, activeHyperlinkHasVisibleText, activeHyperlinkOutputIndex, pendingSgrOutputIndex, pendingSgrActiveStyles, position, returnValue, include } = applyToken({
+        token,
+        isPastEnd,
+        start,
+        activeStyles,
+        activeHyperlink,
+        activeHyperlinkHasVisibleText,
+        activeHyperlinkOutputIndex,
+        pendingSgrOutputIndex,
+        pendingSgrActiveStyles,
+        position,
+        returnValue,
+        include
+      }));
+    }
+    if (!include) {
+      return "";
+    }
+    if (activeHyperlink) {
+      returnValue += closeHyperlink(activeHyperlink);
+    }
+    returnValue += undoAnsiCodes(activeStyles);
+    return returnValue;
+  }
+  return __toCommonJS(slice_entry_exports);
+})();
+module.exports.sliceAnsi = __ccAnsiSlice.sliceAnsi;
