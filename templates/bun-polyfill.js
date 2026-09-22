@@ -1258,6 +1258,11 @@ if (typeof globalThis.Bun === "undefined") {
     // Terminal teardown polls for a late DA1 response.
     sleepSync: (ms) => { Atomics.wait(sleepCell, 0, 0, ms); },
 
+    // Scaling and compression for pasted or attached images, plus the
+    // clipboard readers. Loaded lazily: the module pulls in sharp's native
+    // binding, which no command path needs unless an image shows up.
+    get Image() { return require("./bun-image-compat.cjs"); },
+
     file: bunFile,
 
     // Object.assign carries bunHash's own properties across — Bun.hash is

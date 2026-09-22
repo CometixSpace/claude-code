@@ -13,6 +13,13 @@ const ALL_PLATFORMS = [
   'android-arm64',
 ];
 
+// The @img/sharp-* natives have to match the JS half bundled into the
+// package, so take the version from the one place it is pinned rather than
+// repeating a range that could drift away from it.
+const SHARP_VERSION = JSON.parse(
+  readFileSync(join(__dirname, '..', 'package.json'), 'utf8'),
+).dependencies.sharp;
+
 export async function buildMainPackage({
   version,
   splitEsm = false,
@@ -56,15 +63,15 @@ export async function buildMainPackage({
     },
     optionalDependencies: {
       ...optDeps,
-      '@img/sharp-darwin-arm64': '^0.34.2',
-      '@img/sharp-darwin-x64': '^0.34.2',
-      '@img/sharp-linux-arm': '^0.34.2',
-      '@img/sharp-linux-arm64': '^0.34.2',
-      '@img/sharp-linux-x64': '^0.34.2',
-      '@img/sharp-linuxmusl-arm64': '^0.34.2',
-      '@img/sharp-linuxmusl-x64': '^0.34.2',
-      '@img/sharp-win32-arm64': '^0.34.2',
-      '@img/sharp-win32-x64': '^0.34.2',
+      '@img/sharp-darwin-arm64': SHARP_VERSION,
+      '@img/sharp-darwin-x64': SHARP_VERSION,
+      '@img/sharp-linux-arm': SHARP_VERSION,
+      '@img/sharp-linux-arm64': SHARP_VERSION,
+      '@img/sharp-linux-x64': SHARP_VERSION,
+      '@img/sharp-linuxmusl-arm64': SHARP_VERSION,
+      '@img/sharp-linuxmusl-x64': SHARP_VERSION,
+      '@img/sharp-win32-arm64': SHARP_VERSION,
+      '@img/sharp-win32-x64': SHARP_VERSION,
     },
     files: [
       'cli.js',
@@ -73,7 +80,10 @@ export async function buildMainPackage({
       'sdk-tools.d.ts',
       // Written by postinstall from the platform package. Listed so `npm pack`
       // keeps them if the tree is ever staged before publishing.
-      ...(splitEsm ? ['chunk-*.js', 'bun-polyfill.mjs', 'src/', 'vendor/'] : []),
+      ...(splitEsm ? [
+        'chunk-*.js', 'bun-polyfill.mjs', 'bun-image-compat.cjs',
+        'bun-sharp-compat.cjs', 'src/', 'vendor/',
+      ] : []),
     ],
   };
 

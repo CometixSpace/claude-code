@@ -205,7 +205,16 @@ export async function scanBunApis(extractDir, files, { sourceType = 'module' } =
   if (live) {
     for (const [api, { members, guarded }] of used) {
       if (!defined.has(api) || members.size === 0) continue;
-      const ns = live[api];
+      // Some entries are lazy getters that pull in a build-time bundle
+      // sitting beside the shipped polyfill, not beside the template. Here
+      // that module does not exist, and the namespace cannot be probed —
+      // the entry is present either way, which is what this check is for.
+      let ns;
+      try {
+        ns = live[api];
+      } catch {
+        continue;
+      }
       const gaps = [...members]
         .filter((m) => ns?.[m] === undefined && !isDeliberate(api, m))
         .sort();

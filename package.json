@@ -18,7 +18,8 @@
     "esbuild": "^0.28.1",
     "js-beautify": "^1.15.1",
     "node-lief": "^1.1.1",
-    "semver": "^7.6.3"
+    "semver": "^7.6.3",
+    "sharp": "0.34.5"
   },
   "overrides": {
     "js-cookie": ">=3.0.7",

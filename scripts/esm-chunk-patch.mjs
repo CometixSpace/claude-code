@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join, relative, dirname, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as acorn from 'acorn';
+import { build as esbuild } from 'esbuild';
 import { astPatch } from './node-compat-patch.mjs';
 import { BUNFS_ROOTS } from './bun-sea-extract.mjs';
 import {
@@ -385,6 +386,28 @@ export async function patchSplitEsm({ extractDir, entryRel = 'cli.js' }) {
     if (code !== before) await writeFile(path, code);
     leftover += (code.match(new RegExp(ROOT_ALT, 'g')) || []).length;
   }
+
+  // Bun.Image is sharp's API under another name, so bundle sharp's JS half
+  // next to the entry. Only the prebuilt natives stay external — they come
+  // from the @img/sharp-* optional dependencies the main package lists, and
+  // are picked per platform at install time. @img/colour is pure JS and has
+  // to be inlined, or the bundle fails to resolve it at runtime.
+  await esbuild({
+    absWorkingDir: join(__dirname, '..'),
+    entryPoints: { 'bun-sharp-compat': 'sharp' },
+    outdir: extractDir,
+    outExtension: { '.js': '.cjs' },
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    target: 'node24',
+    minify: true,
+    external: ['@img/sharp-*'],
+  });
+  await writeFile(
+    join(extractDir, 'bun-image-compat.cjs'),
+    readFileSync(join(__dirname, '..', 'templates', 'bun-image-compat.cjs')),
+  );
 
   // Ship the polyfill next to the entry and import it first, so globalThis.Bun
   // and the helper globals exist before any chunk body runs. Worker entries
