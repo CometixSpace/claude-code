@@ -11,6 +11,100 @@ if (typeof globalThis.Bun === "undefined") {
   const https = require("https");
   const { Readable } = require("stream");
   const util = require("util");
+  const { Worker: NodeWorker, isMainThread, parentPort } = require("node:worker_threads");
+
+  // ──────────────────────────────────────────────
+  // Web Worker surface for the function-hooks host
+  //
+  // Hook modules run in a worker the bundle creates with `new Worker(url,
+  // opts)` and drives through addEventListener/postMessage. Node has
+  // worker_threads, which is the same idea behind a different interface —
+  // events instead of an EventTarget, and no ErrorEvent.
+  //
+  // Exposed under a private name rather than as a global Worker: several
+  // bundled libraries branch on `typeof Worker` and take a different path
+  // when one exists. The split-ESM patcher rewrites the one construction
+  // site that means the hooks worker, leaving those checks alone.
+  // ──────────────────────────────────────────────
+  // Node ships MessageEvent but not ErrorEvent, and the host distinguishes
+  // the two with instanceof — a plain Event carrying a message would be read
+  // as "died without an error" and reported as such.
+  if (typeof globalThis.ErrorEvent === "undefined") {
+    globalThis.ErrorEvent = class ErrorEvent extends Event {
+      constructor(type, init = {}) {
+        super(type, init);
+        this.message = init.message ?? "";
+        this.filename = init.filename ?? "";
+        this.lineno = init.lineno ?? 0;
+        this.colno = init.colno ?? 0;
+        this.error = init.error ?? null;
+      }
+    };
+  }
+
+  globalThis.__ccHooksWorker = class HooksWorker extends EventTarget {
+    constructor(url, options = {}) {
+      super();
+      // The parent may have been launched with flags a worker rejects, so
+      // start from the caller's list rather than inheriting process.execArgv.
+      const execArgv = options.execArgv ?? [];
+      this._stopped = false;
+      this._worker = new NodeWorker(url, {
+        ...options,
+        // Hook modules are loaded through vm.SourceTextModule.
+        execArgv: execArgv.includes("--experimental-vm-modules")
+          ? execArgv
+          : [...execArgv, "--experimental-vm-modules"],
+      });
+
+      // Everything that can go wrong arrives as one error event, once: the
+      // host watches for a single failure and tears the worker down. A silent
+      // exit counts too, or a hook that dies at import time would hang.
+      const fail = (error) => {
+        if (this._stopped) return;
+        this._stopped = true;
+        this.dispatchEvent(new ErrorEvent("error", { message: error.message, error }));
+      };
+      this._worker.on("message", (data) =>
+        this.dispatchEvent(new MessageEvent("message", { data })));
+      this._worker.on("messageerror", fail);
+      this._worker.on("error", fail);
+      this._worker.on("exit", (code) =>
+        fail(new Error(`hooks worker exited unexpectedly (code ${code})`)));
+    }
+
+    postMessage(value, transfer) { this._worker.postMessage(value, transfer); }
+    terminate() { this._stopped = true; return this._worker.terminate(); }
+    ref() { this._worker.ref(); return this; }
+    unref() { this._worker.unref(); return this; }
+
+    get onmessage() { return this._onmessage ?? null; }
+    set onmessage(fn) {
+      if (this._onmessage) this.removeEventListener("message", this._onmessage);
+      this._onmessage = fn;
+      if (fn) this.addEventListener("message", fn);
+    }
+
+    get onerror() { return this._onerror ?? null; }
+    set onerror(fn) {
+      if (this._onerror) this.removeEventListener("error", this._onerror);
+      this._onerror = fn;
+      if (fn) this.addEventListener("error", fn);
+    }
+  };
+
+  // Inside the worker the module expects the Web Worker globals.
+  if (!isMainThread && parentPort) {
+    globalThis.self = globalThis;
+    globalThis.postMessage = (value, transfer) => parentPort.postMessage(value, transfer);
+    globalThis.addEventListener = parentPort.addEventListener.bind(parentPort);
+    globalThis.removeEventListener = parentPort.removeEventListener.bind(parentPort);
+    Object.defineProperty(globalThis, "onmessage", {
+      configurable: true,
+      get: () => parentPort.onmessage,
+      set: (fn) => { parentPort.onmessage = fn; },
+    });
+  }
 
   const BUN_FILE = Symbol.for("bun.polyfill.file");
 
@@ -1411,7 +1505,13 @@ if (typeof globalThis.Bun === "undefined") {
 
     Transpiler: class BunTranspilerPolyfill {
       constructor(opts = {}) { this._loader = opts.loader || "js"; }
-      transformSync(code) { return typeof code === "string" ? code : ""; }
+      transformSync(code) {
+        if (typeof code !== "string") return "";
+        // Plain JS needs nothing done to it; TS/TSX has to have its types
+        // erased, or the parser downstream stops at the first annotation.
+        if (this._loader === "js") return code;
+        return require("./bun-transpiler-compat.cjs").transformSync(code, this._loader);
+      }
       scanImports(code) { return []; }
     },
 

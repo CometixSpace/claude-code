@@ -247,6 +247,74 @@ function stripBunfsRoot(value) {
   return null;
 }
 
+// ──────────────────────────────────────────────
+//  E6: the hooks worker → __ccHooksWorker
+//
+//  Function-hook modules run in a worker created with `new Worker(url, opts)`.
+//  Node has no global Worker, so that construction throws and the hooks host
+//  dies with it.
+//
+//  Only this one site is rewritten. Several bundled libraries — node-forge
+//  among them — also construct Workers, and branch on `typeof Worker` to pick
+//  a single-threaded path when there is none. Installing a global would send
+//  them down the threaded path into an adapter built for something else, so
+//  the shim stays under a private name and only the hooks site points at it.
+//
+//  The site is identified by its argument, not by position: the URL comes
+//  from a helper resolving HOOKS_WORKER_URL, which is what makes it the hooks
+//  worker rather than any other.
+// ──────────────────────────────────────────────
+
+export function rewriteHooksWorker(code) {
+  if (!code.includes('HOOKS_WORKER_URL') || !code.includes('Worker')) {
+    return { code, rewritten: 0 };
+  }
+  let ast;
+  try {
+    ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' });
+  } catch {
+    return { code, rewritten: 0 };
+  }
+
+  // The chunk that builds the hooks worker also carries library code that
+  // constructs its own, so find the helper resolving HOOKS_WORKER_URL first
+  // and rewrite only the Worker taking its result.
+  const providers = new Set();
+  const workers = [];
+  (function visit(node) {
+    const body = node.type === 'VariableDeclarator' ? node.init
+      : node.type === 'FunctionDeclaration' ? node.body
+      : null;
+    if (body && node.id?.type === 'Identifier') {
+      const source = code.slice(body.start, body.end);
+      if (source.includes('HOOKS_WORKER_URL') && source.includes('hooks-worker')) {
+        providers.add(node.id.name);
+      }
+    }
+    if (node.type === 'NewExpression' && node.callee?.name === 'Worker') workers.push(node);
+    for (const key of Object.keys(node)) {
+      const child = node[key];
+      if (Array.isArray(child)) {
+        for (const item of child) if (item && typeof item.type === 'string') visit(item);
+      } else if (child && typeof child.type === 'string') {
+        visit(child);
+      }
+    }
+  })(ast);
+
+  const matches = workers.filter((node) =>
+    node.arguments[0]?.type === 'CallExpression' &&
+    providers.has(node.arguments[0].callee?.name));
+
+  let out = code;
+  for (const node of matches.sort((a, b) => b.callee.start - a.callee.start)) {
+    out = out.slice(0, node.callee.start)
+      + 'globalThis.__ccHooksWorker'
+      + out.slice(node.callee.end);
+  }
+  return { code: out, rewritten: matches.length };
+}
+
 function firstStatementStart(code) {
   const ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' });
   return ast.body.length > 0 ? ast.body[0].start : code.length;
@@ -328,7 +396,7 @@ export async function patchSplitEsm({ extractDir, entryRel = 'cli.js' }) {
   const files = await listJsFiles(extractDir);
   const stats = {
     files: files.length, specifiers: 0, literals: 0,
-    metaRequire: 0, rebrand: 0, hoisted: 0, ast: {},
+    metaRequire: 0, rebrand: 0, hoisted: 0, hooksWorkers: 0, ast: {},
   };
   let leftover = 0;
 
@@ -353,6 +421,10 @@ export async function patchSplitEsm({ extractDir, entryRel = 'cli.js' }) {
     let code = rewritten.code;
     stats.specifiers += rewritten.specifiers;
     stats.literals += rewritten.literals;
+
+    const hooksWorker = rewriteHooksWorker(code);
+    code = hooksWorker.code;
+    stats.hooksWorkers += hooksWorker.rewritten;
 
     const meta = patchImportMetaRequire(code);
     code = meta.code;
@@ -394,7 +466,12 @@ export async function patchSplitEsm({ extractDir, entryRel = 'cli.js' }) {
   // to be inlined, or the bundle fails to resolve it at runtime.
   await esbuild({
     absWorkingDir: join(__dirname, '..'),
-    entryPoints: { 'bun-sharp-compat': 'sharp' },
+    entryPoints: {
+      'bun-sharp-compat': 'sharp',
+      // Backs Bun.Transpiler — Sucrase and Acorn, bundled so the shipped
+      // package carries no dependency of its own for this.
+      'bun-transpiler-compat': join(__dirname, '..', 'templates', 'bun-transpiler-compat.cjs'),
+    },
     outdir: extractDir,
     outExtension: { '.js': '.cjs' },
     bundle: true,
@@ -429,6 +506,15 @@ export async function patchSplitEsm({ extractDir, entryRel = 'cli.js' }) {
   }
   stats.polyfillEntries = entries.length;
   stats.leftover = leftover;
+
+  // A tree carrying the hooks worker has exactly one place that starts it.
+  // Anything else means the shape moved and the rewrite is now aimed at the
+  // wrong construction — or at none, which would ship hooks that cannot run.
+  if (entries.length > 1 && stats.hooksWorkers !== 1) {
+    throw new Error(
+      `expected one hooks Worker creation site, rewrote ${stats.hooksWorkers}`,
+    );
+  }
 
   return stats;
 }
