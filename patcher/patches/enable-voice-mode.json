@@ -1,0 +1,62 @@
+{
+  "id": "enable-voice-mode",
+  "title": "Make voice mode available without the official OAuth account and feature flag",
+  "description": "Voice mode is gated on signing in through claude.ai and on the allow_voice_mode flag being granted. This forces the combined gate true, which unlocks the UI and the /voice command. On its own that only opens the door — see voice-asr-backend for supplying transcription.",
+  "risk": "high",
+
+  "stages": [
+    {
+      "id": "find-flag-reader",
+      "sites": [
+        {
+          "id": "flag-reader",
+          "description": "The one-line function reading the allow_voice_mode flag. Captured so the gate below can be recognised by what it actually consults rather than by its shape.",
+          "marker": "allow_voice_mode",
+          "match": {
+            "node": "FunctionDeclaration",
+            "where": { "params.length": 0, "body.body.length": 1, "body.body.0.type": "ReturnStatement" },
+            "contains": "allow_voice_mode"
+          },
+          "capture": { "flagFn": "id.name" },
+          "expect": "required"
+        }
+      ]
+    },
+    {
+      "id": "force",
+      "sites": [
+        {
+          "id": "voice-gate",
+          "description": "`<oauthCheck>() && <flagReader>()` — the composite gate both the /voice command and the UI's isHidden go through, so forcing this one function is enough.\n\nThe right operand is pinned to the captured flag reader. Shape alone is not sufficient: the same chunk holds three zero-argument functions whose whole body is a logical AND of two zero-argument calls, and matching on that picked the wrong one.",
+          "sameFileAs": "flag-reader",
+          "marker": "allow_voice_mode",
+          "match": {
+            "node": "FunctionDeclaration",
+            "where": {
+              "params.length": 0,
+              "body.body.length": 1,
+              "body.body.0.type": "ReturnStatement",
+              "body.body.0.argument.type": "LogicalExpression",
+              "body.body.0.argument.operator": "&&",
+              "body.body.0.argument.right.callee.name": "{{flagFn}}"
+            }
+          },
+          "capture": { "gate": "id.name" },
+          "edit": { "op": "replace-body", "text": "{return!0}" },
+          "expect": "required"
+        }
+      ]
+    }
+  ],
+
+  "verify": [
+    {
+      "match": {
+        "node": "FunctionDeclaration",
+        "where": { "id.name": "{{gate}}", "body.body.length": 1 },
+        "has": { "node": "ReturnStatement", "where": { "argument.argument.value": 0 } }
+      },
+      "describe": "voice gate forced true"
+    }
+  ]
+}

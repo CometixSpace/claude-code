@@ -1,0 +1,54 @@
+{
+  "id": "voice-asr-backend",
+  "title": "Point voice transcription at your own ASR service",
+  "description": "The stream connector already honours VOICE_STREAM_BASE_URL, but refuses to connect at all without an OAuth token and always sends that token as the bearer — so the override cannot reach a service that is not Anthropic's. This makes both conditional on the override being set.\n\nThe wire protocol is Deepgram-compatible: linear16 PCM at 16 kHz mono, with encoding, sample_rate, channels, endpointing_ms, utterance_end_ms and language as query parameters. Any server speaking that will do.\n\n  VOICE_STREAM_BASE_URL=ws://127.0.0.1:8080\n  VOICE_STREAM_TOKEN=<optional bearer for your service>",
+  "risk": "high",
+
+  "sites": [
+    {
+      "id": "allow-missing-oauth",
+      "description": "`if(!cred?.accessToken) return log(...), null` — the early bail that makes an OAuth session mandatory. Relaxed only when the override is set, so the stock path keeps requiring a token exactly as before.\n\nMatched through its own log message rather than the token shape, since `!x?.accessToken` is a common enough test.",
+      "marker": "[voice_stream] No OAuth token available",
+      "match": {
+        "node": "IfStatement",
+        "where": {
+          "test.type": "UnaryExpression",
+          "test.operator": "!",
+          "test.argument.type": "ChainExpression"
+        },
+        "contains": "No OAuth token available"
+      },
+      "capture": { "cred": "$src:test.argument" },
+      "edit": {
+        "op": "replace-field",
+        "field": "test",
+        "text": "!{{cred}}&&!process.env.VOICE_STREAM_BASE_URL"
+      },
+      "expect": "required"
+    },
+    {
+      "id": "bearer-override",
+      "description": "The Authorization header. A self-hosted service has no reason to accept an Anthropic token, and may want none at all — hence the empty-string fallback rather than passing undefined, which would make the header read \"Bearer undefined\".",
+      "sameFileAs": "allow-missing-oauth",
+      "marker": "[voice_stream] No OAuth token available",
+      "match": {
+        "node": "Property",
+        "where": { "key.name": "Authorization", "value.type": "TemplateLiteral" },
+        "contains": "/^Authorization:`Bearer \\$\\{[\\w.?]+\\}`$/"
+      },
+      "capture": { "token": "$src:value.expressions.0" },
+      "edit": {
+        "op": "replace-value",
+        "text": "`Bearer ${process.env.VOICE_STREAM_BASE_URL?(process.env.VOICE_STREAM_TOKEN??\"\"):{{token}}}`"
+      },
+      "expect": "required"
+    }
+  ],
+
+  "verify": [
+    { "match": { "node": "MemberExpression", "where": { "property.name": "VOICE_STREAM_TOKEN" } },
+      "describe": "bearer is overridable for a self-hosted service" },
+    { "match": { "node": "LogicalExpression", "where": { "operator": "&&", "right.argument.property.name": "VOICE_STREAM_BASE_URL" } },
+      "describe": "the override lifts the OAuth requirement" }
+  ]
+}
