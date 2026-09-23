@@ -1,0 +1,56 @@
+{
+  "id": "classifier-model",
+  "title": "Run the auto-mode safety classifier on a cheaper model",
+  "description": "Auto mode classifies every tool call for safety using the same model as the conversation, so an Opus session pays Opus rates for a classification task Haiku handles well. Set CLAUDE_CLASSIFIER_MODEL to override it, e.g. claude-haiku-4-5-20251001. Unset, nothing changes.",
+  "risk": "medium",
+
+  "stages": [
+    {
+      "id": "find-binding",
+      "sites": [
+        {
+          "id": "classifier-arg",
+          "description": "Whatever identifier is handed to the classifier request as classifierModel. Both call sites (xml_s1 and xml_s2) pass the same binding, and it is the function's 7th parameter — but the position is read out of the code rather than assumed, since argument order is exactly the kind of thing that shifts between builds.",
+          "marker": "classifierModel",
+          "match": {
+            "node": "Property",
+            "where": { "key.name": "classifierModel", "value.type": "Identifier" }
+          },
+          "capture": { "modelVar": "value.name" },
+          "expect": "required"
+        }
+      ]
+    },
+    {
+      "id": "override",
+      "sites": [
+        {
+          "id": "classifier-entry",
+          "description": "The classifier request builder — the one function running both XML stages. Reassigning the parameter at the top covers every downstream use: the request body, the beta headers derived from it, and the telemetry that reports which model classified.",
+          "sameFileAs": "classifier-arg",
+          "marker": "classifierStage",
+          "match": {
+            "node": "FunctionDeclaration",
+            "contains": ["classifierStage:\"xml_s1\"", "classifierStage:\"xml_s2\""],
+            "has": {
+              "node": "Property",
+              "where": { "key.name": "classifierModel", "value.name": "{{modelVar}}" }
+            }
+          },
+          "edit": {
+            "op": "prepend-body",
+            "text": "if(process.env.CLAUDE_CLASSIFIER_MODEL)  {{modelVar}}=process.env.CLAUDE_CLASSIFIER_MODEL;"
+          },
+          "expect": "required"
+        }
+      ]
+    }
+  ],
+
+  "verify": [
+    {
+      "contains": "if(process.env.CLAUDE_CLASSIFIER_MODEL)",
+      "describe": "classifier model can be overridden by env"
+    }
+  ]
+}
