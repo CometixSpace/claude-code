@@ -1,54 +1,76 @@
 {
   "id": "voice-asr-backend",
-  "title": "Point voice transcription at your own ASR service",
-  "description": "The stream connector already honours VOICE_STREAM_BASE_URL, but refuses to connect at all without an OAuth token and always sends that token as the bearer — so the override cannot reach a service that is not Anthropic's. This makes both conditional on the override being set.\n\nThe wire protocol is Deepgram-compatible: linear16 PCM at 16 kHz mono, with encoding, sample_rate, channels, endpointing_ms, utterance_end_ms and language as query parameters. Any server speaking that will do.\n\n  VOICE_STREAM_BASE_URL=ws://127.0.0.1:8080\n  VOICE_STREAM_TOKEN=<optional bearer for your service>",
+  "title": "Transcribe voice through the bundled cometix-asr addon",
+  "description": "Replaces the WebSocket voice transport with the cometix-asr addon, so audio is transcribed on the machine instead of streamed to Anthropic. The addon is loaded from vendor/cometix-asr beside the entry; when it is absent the patch reports a load error rather than silently falling back, since the stock path would send the audio off-box.\n\nAudio is signed 16-bit little-endian PCM at 16 kHz mono — what the host already captures, and what feedPcm expects.",
   "risk": "high",
-
   "sites": [
     {
-      "id": "allow-missing-oauth",
-      "description": "`if(!cred?.accessToken) return log(...), null` — the early bail that makes an OAuth session mandatory. Relaxed only when the override is set, so the stock path keeps requiring a token exactly as before.\n\nMatched through its own log message rather than the token shape, since `!x?.accessToken` is a common enough test.",
+      "id": "transport",
+      "description": "The adapter, inserted ahead of the connector it stands in for. Self-contained rather than imported: the chunk it lands in is chosen by content, so its path is not something the patch can name.",
       "marker": "[voice_stream] No OAuth token available",
       "match": {
-        "node": "IfStatement",
+        "node": "FunctionDeclaration",
         "where": {
-          "test.type": "UnaryExpression",
-          "test.operator": "!",
-          "test.argument.type": "ChainExpression"
+          "params.length": 3
         },
-        "contains": "No OAuth token available"
+        "contains": [
+          "No OAuth token available",
+          "VOICE_STREAM_BASE_URL"
+        ]
       },
-      "capture": { "cred": "$src:test.argument" },
+      "capture": {
+        "connector": "id.name"
+      },
       "edit": {
-        "op": "replace-field",
-        "field": "test",
-        "text": "!{{cred}}&&!process.env.VOICE_STREAM_BASE_URL"
+        "op": "insert-before",
+        "textFrom": "voice-asr-cometix.js"
       },
       "expect": "required"
     },
     {
-      "id": "bearer-override",
-      "description": "The Authorization header. A self-hosted service has no reason to accept an Anthropic token, and may want none at all — hence the empty-string fallback rather than passing undefined, which would make the header read \"Bearer undefined\".",
-      "sameFileAs": "allow-missing-oauth",
+      "id": "divert",
+      "description": "Divert to the local adapter before the connector touches credentials — a refresh here would prompt for a login that local transcription has no use for. CLAUDE_CODE_ASR=0 restores the stock WebSocket path.\n\nThe host awaits this function and only checks that it resolved to something, so returning a different transport is transparent to it.",
+      "sameFileAs": "transport",
       "marker": "[voice_stream] No OAuth token available",
       "match": {
-        "node": "Property",
-        "where": { "key.name": "Authorization", "value.type": "TemplateLiteral" },
-        "contains": "/^Authorization:`Bearer \\$\\{[\\w.?]+\\}`$/"
+        "node": "FunctionDeclaration",
+        "where": {
+          "params.length": 3
+        },
+        "contains": [
+          "No OAuth token available",
+          "VOICE_STREAM_BASE_URL"
+        ]
       },
-      "capture": { "token": "$src:value.expressions.0" },
+      "capture": {
+        "cbArg": "params.0.name",
+        "optArg": "params.1.name"
+      },
       "edit": {
-        "op": "replace-value",
-        "text": "`Bearer ${process.env.VOICE_STREAM_BASE_URL?(process.env.VOICE_STREAM_TOKEN??\"\"):{{token}}}`"
+        "op": "prepend-body",
+        "text": "if(process.env.CLAUDE_CODE_ASR!==\"0\")return __ccppAsrConnect({{cbArg}},{{optArg}});"
       },
       "expect": "required"
     }
   ],
-
   "verify": [
-    { "match": { "node": "MemberExpression", "where": { "property.name": "VOICE_STREAM_TOKEN" } },
-      "describe": "bearer is overridable for a self-hosted service" },
-    { "match": { "node": "LogicalExpression", "where": { "operator": "&&", "right.argument.property.name": "VOICE_STREAM_BASE_URL" } },
-      "describe": "the override lifts the OAuth requirement" }
+    {
+      "match": {
+        "node": "FunctionDeclaration",
+        "where": {
+          "id.name": "__ccppAsrConnect"
+        }
+      },
+      "describe": "local transport is present"
+    },
+    {
+      "match": {
+        "node": "MemberExpression",
+        "where": {
+          "property.name": "CLAUDE_CODE_ASR"
+        }
+      },
+      "describe": "connector diverts unless CLAUDE_CODE_ASR=0"
+    }
   ]
 }
