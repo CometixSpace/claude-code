@@ -117,6 +117,39 @@ Assets stay compressed on disk where upstream compresses them; the loader sniffs
 
 Single-CJS builds keep the older shape: one `cli.js` with native modules and assets under `vendor/`.
 
+## Optional patches
+
+The published package is a faithful port and changes no behaviour. `patcher/`
+holds opt-in changes you can apply to an installed copy — one scan for any
+number of them, every rewrite marked in place, and `restore` returning each
+file to the bytes npm installed.
+
+```bash
+git clone https://github.com/CometixSpace/claude-code.git && cd claude-code && npm install
+node patcher/bin/patch.mjs list
+node patcher/bin/patch.mjs apply --all      # or name the ones you want
+node patcher/bin/patch.mjs restore
+```
+
+| Patch | What it does |
+|---|---|
+| `cleanup-period` | Keep transcripts 9999 days instead of 30 |
+| `disable-collapse-read-search` | Show each Read/Search result instead of a folded summary |
+| `enable-keybindings` | Ctrl+C exits instead of aborting the agent loop |
+| `file-read-limit` | Read accepts files up to 100k tokens |
+| `context-limit` | `CLAUDE_CODE_CONTEXT_LIMIT` sets the context window for any model |
+| `classifier-model` | `CLAUDE_CLASSIFIER_MODEL` runs the auto-mode classifier on a cheaper model |
+| `classifier-fail-open` | An unreachable classifier asks instead of denying |
+| `transcript-dialog-replay` | Permission dialogs raised under Ctrl+O are no longer lost |
+| `chrome-local-socket` | Claude in Chrome over the local native host, not the cloud bridge |
+| `unlock-ultracode` | `/effort ultracode` on models that only advertise max effort |
+| `enable-voice-mode` | Voice mode without claude.ai OAuth, plus a Voice mode row in `/config` |
+| `voice-asr-backend` | Transcription through the bundled cometix-asr addon |
+| `computer-use` | `CLAUDE_CODE_COMPUTER_USE=1` enables Computer Use without Max/Pro (interactive sessions, macOS) |
+
+Upgrading the package replaces patched files; run `apply` again afterwards.
+Details, switches and caveats for each are in [`patcher/README.md`](patcher/README.md).
+
 ## Releases
 
 `.github/workflows/release.yml` builds a version on demand (`workflow_dispatch`), publishes the platform packages plus the main package to npm, and attaches the tarballs to a GitHub release. A failed platform publish fails the job rather than leaving the main package pointing at versions that were never published.

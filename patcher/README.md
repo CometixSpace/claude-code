@@ -1,13 +1,183 @@
 # patcher
 
-One scanner shell, patches declared as data.
+One scanner shell, patches declared as data. Opt-in changes to an installed
+`@cometix/claude-code`, applied in a single scan and undone byte-for-byte.
 
 ```bash
-node patcher/bin/patch.mjs list
-node patcher/bin/patch.mjs check cleanup-period
-node patcher/bin/patch.mjs apply cleanup-period
-node patcher/bin/patch.mjs restore
+git clone https://github.com/CometixSpace/claude-code.git
+cd claude-code && npm install
+
+node patcher/bin/patch.mjs list                  # every patch, and which are applied
+node patcher/bin/patch.mjs check  <id...>        # locate sites, write nothing
+node patcher/bin/patch.mjs apply  <id...>        # or: apply --all
+node patcher/bin/patch.mjs status                # what is applied, site by site
+node patcher/bin/patch.mjs restore               # everything back to what npm installed
 ```
+
+The global install is found automatically; `--path /path/to/cli.js` targets
+another. Reinstalling or upgrading the package replaces the patched files, so
+run `apply` again afterwards — the version check and site scan decide what
+still fits.
+
+## Patches
+
+Verified against 2.1.280. Patches marked **env** do nothing until the variable
+is set, so applying them is harmless on its own.
+
+| Patch | What it does | Switch | Risk |
+|---|---|---|---|
+| `cleanup-period` | Keep transcripts 9999 days instead of 30 | — | low |
+| `disable-collapse-read-search` | Show each Read/Search result instead of one folded summary | — | low |
+| `enable-keybindings` | Ctrl+C exits instead of aborting the agent loop | — | low |
+| `file-read-limit` | Read accepts files up to 100k tokens instead of 25k | — | medium |
+| `context-limit` | Set the context window for any model | env `CLAUDE_CODE_CONTEXT_LIMIT` | medium |
+| `classifier-model` | Run the auto-mode safety classifier on a cheaper model | env `CLAUDE_CLASSIFIER_MODEL` | medium |
+| `chrome-local-socket` | Claude in Chrome over the local native host instead of the cloud bridge | — | medium |
+| `classifier-fail-open` | Unreachable classifier asks instead of denying | — | high |
+| `transcript-dialog-replay` | Permission dialogs raised under Ctrl+O are no longer lost | — | high |
+| `unlock-ultracode` | `/effort ultracode` on models that only advertise max effort | — | high |
+| `enable-voice-mode` | Voice mode without claude.ai OAuth, plus a row in `/config` | — | high |
+| `voice-asr-backend` | Transcribe through the bundled cometix-asr addon | on by default; `CLAUDE_CODE_ASR=0` to opt out | high |
+| `computer-use` | Computer Use without Max/Pro or the feature flag | env `CLAUDE_CODE_COMPUTER_USE=1` | high |
+
+Environment switches work from the shell or from the `env` block of
+`~/.claude/settings.json`, which is applied before any of them are read:
+
+```json
+{
+  "env": {
+    "CLAUDE_CODE_COMPUTER_USE": "1",
+    "CLAUDE_CODE_CONTEXT_LIMIT": "400000",
+    "CLAUDE_CLASSIFIER_MODEL": "claude-haiku-4-5-20251001"
+  }
+}
+```
+
+### cleanup-period
+
+Transcripts older than 30 days are deleted at startup. This raises the default
+to 9999. An explicit `cleanupPeriodDays` in settings still wins — only the
+fallback constant changes.
+
+### disable-collapse-read-search
+
+Runs of Read and Search calls are replaced in the transcript by one collapsed
+line. This passes each message through instead. Brief mode has its own
+collapse pipeline and is left alone.
+
+### enable-keybindings
+
+Since 2.1.x Ctrl+C is bound to `app:interrupt`, which aborts the agent loop —
+easy to hit by accident. This rebinds it to `app:exit`, as in 2.0.x; Escape
+still interrupts. The transcript view's own Ctrl+C binding is untouched.
+Keybinding customisation (`~/.claude/keybindings.json`) is already enabled
+upstream on 2.1.280; the patch reports that site as satisfied.
+
+### file-read-limit
+
+Read refuses files over 25,000 tokens and asks for offset/limit. This raises
+the ceiling to 100,000. An explicit `maxTokens` in settings still wins.
+
+### context-limit
+
+```bash
+CLAUDE_CODE_CONTEXT_LIMIT=400000
+```
+
+The resolver already reads `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, but only for
+models passing an eligibility check. This variable applies to every model.
+Only a positive finite number takes effect; anything else falls through to
+the normal resolution. The official variable keeps its meaning.
+
+### classifier-model
+
+```bash
+CLAUDE_CLASSIFIER_MODEL=claude-haiku-4-5-20251001
+```
+
+Auto mode classifies every tool call with the conversation's own model, so an
+Opus session pays Opus rates for classification. Unset or empty, nothing
+changes.
+
+Auto mode itself needs no unlocking on 2.1.280 — it is on by default, and the
+old eligibility bypass has nothing left to do.
+
+### classifier-fail-open
+
+When the classifier cannot be reached, auto mode fails closed and denies the
+tool call. This turns that one branch into a permission prompt, so an outage
+costs a confirmation rather than a blocked action. Every other denial,
+including an actual unsafe verdict, is unchanged.
+
+### transcript-dialog-replay
+
+Permission requests raised while the Ctrl+O transcript is open had no screen
+listening for them and were cancelled on the spot, leaving the tool at
+"Waiting…". Pending requests are now kept and shown by the next screen that
+listens — returning to the prompt brings the dialog up. Once answered, a
+request is not shown again.
+
+### chrome-local-socket
+
+The browser client always took the cloud WebSocket bridge, which needs OAuth,
+while the extension's native host listens on a local socket — so tool calls
+reported "Browser extension is not connected". This forces the local path and
+clears the bridge configuration. The bridge-only tools (`switch_browser`,
+`list_connected_browsers`, `select_browser`) then answer that they need a
+bridge connection — they cannot work over a socket.
+
+### unlock-ultracode
+
+Ultracode is xhigh effort plus dynamic workflow orchestration, offered only on
+models advertising xhigh support. This forces that capability check, which
+unlocks it on models such as opus-4-6 and sonnet-4-6 that support max effort.
+
+### enable-voice-mode
+
+Two things:
+
+- Lifts the gate — claude.ai OAuth and the `allow_voice_mode` flag — behind
+  both `/voice` and the UI.
+- Adds a **Voice mode** row to `/config` with `off` / `hold` / `tap`. 2.1.280
+  has none; `voiceEnabled` was settable only through `/voice`. The row writes
+  the same settings `/voice` does, and turning it off keeps the chosen mode.
+
+Transcription is `voice-asr-backend`'s job; apply both.
+
+### voice-asr-backend
+
+Replaces the WebSocket voice transport with the cometix-asr addon. Audio —
+16 kHz mono 16-bit PCM, as captured — goes to the addon, and transcripts come
+back through the host's own callbacks, including live interim text.
+
+- The addon is installed to `vendor/cometix-asr` beside the entry. Only the
+  binary for the running platform is copied (darwin-arm64, darwin-x64,
+  linux-x64-gnu, win32-x64-msvc are available); `restore` removes it.
+- `CLAUDE_CODE_ASR=0` switches back to the stock transport.
+- `COMETIX_ASR_TRACE_FILE=/path/trace.jsonl` records the session event by
+  event, for diagnosing a transcript that goes missing.
+
+Binary provenance is in `assets/cometix-asr/PROVENANCE.txt`.
+
+### computer-use
+
+```bash
+CLAUDE_CODE_COMPUTER_USE=1
+```
+
+Computer Use ships complete — 24 tools covering screenshots, mouse, keyboard,
+clipboard, app launching and display switching — behind a Max/Pro check and a
+server flag whose local default is off. This variable lifts both.
+
+- **Interactive sessions only.** Upstream never registers Computer Use under
+  `-p`, and `--restricted` disables it too. Check with `/mcp`: a
+  `computer-use` server should be listed as connected.
+- **macOS.** The native modules it drives are macOS-only.
+- The server runs in-process, and asks for per-app access (`request_access`)
+  before controlling anything; screen takeover has its own consent.
+- **HIPAA is not bypassed.** Organisations can mark a session with a HIPAA
+  compliance taint through policy; it latches, and it disables Computer Use
+  regardless of this variable. That is a policy boundary, not a product tier.
 
 ## Why this replaces the standalone scripts
 
