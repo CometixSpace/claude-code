@@ -27,7 +27,7 @@ is set, so applying them is harmless on its own.
 | Patch | What it does | Switch | Risk |
 |---|---|---|---|
 | `cleanup-period` | Keep transcripts 9999 days instead of 30 | — | low |
-| `disable-collapse-read-search` | Every tool call on its own row instead of a folded summary; thinking still folds | — | low |
+| `disable-collapse-read-search` | Tool calls on their own rows instead of a folded summary; todo/task tools and thinking still fold | — | low |
 | `enable-keybindings` | Ctrl+C exits instead of aborting the agent loop | — | low |
 | `file-read-limit` | Read accepts files up to 100k tokens instead of 25k | — | medium |
 | `context-limit` | Set the context window for any model | env `CLAUDE_CODE_CONTEXT_LIMIT` | medium |
@@ -62,25 +62,29 @@ fallback constant changes.
 ### disable-collapse-read-search
 
 The main screen folds runs of tool calls into one summary line. With this
-patch every tool call shows on its own row with its result — reads, searches
-and directory listings (including the read-only shell commands behind them:
+patch they show on their own rows with their results — reads, searches and
+directory listings (including the read-only shell commands behind them:
 `cat`, `grep`, `ls` and the like), MCP calls, memory / workshop / scratchpad
-writes, the todo and task tools, REPL, and in fullscreen other shell commands.
+writes, REPL, and in fullscreen ToolSearch and other shell commands.
 
 Left as upstream has them:
 
+- **Todo and task tools** (`TodoWrite`, `TaskCreate`, `TaskGet`, `TaskUpdate`,
+  `TaskList`) keep folding. Upstream absorbs them silently — their rows carry
+  nothing worth reading — and pops one out on its own only when it fails.
 - **Thinking** still folds into its own `Thought for Xs` line between tool
   calls. That line is the only place the main screen shows thinking at all —
   a raw thinking block renders nothing outside Ctrl+O or verbose mode — so the
   grouping it depends on is kept.
 - **PreToolUse hook summaries** and **recalled memories** follow upstream's
-  rules unchanged: absorbed into a group that is open when they arrive (in
-  practice a thinking group), shown on their own otherwise.
+  rules unchanged: absorbed into a group that is open when they arrive,
+  shown on their own otherwise.
 
-How: the grouping pass asks one function whether a tool call may join a fold,
-and that function now always answers no. It is used for nothing but grouping —
-the classifier behind it also feeds the renderer and the recent-activity
-display, and is left alone.
+How: the grouping pass asks one function whether a tool call may join a fold.
+Its existing "not foldable" check is widened to refuse everything except the
+tools the classifier marks `popsOutOnError` — exactly the todo/task list. The
+classifier itself also feeds the renderer and the recent-activity display, and
+is left alone.
 
 ### enable-keybindings
 

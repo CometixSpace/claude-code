@@ -1,36 +1,67 @@
 {
   "id": "disable-collapse-read-search",
-  "title": "Show every tool call on its own row instead of folding runs of them into one summary",
-  "description": "The main screen folds runs of tool calls — reads, searches, directory listings, the read-only shell commands behind them, MCP calls, memory, workshop and scratchpad writes, task and todo tools, REPL, and in fullscreen other shell commands — into one summary line. With this patch none of them fold: each shows as an ordinary tool row with its result. Thinking between them still folds into its own 'Thought for Xs' line, and PreToolUse hook summaries and recalled memories are handled exactly as upstream handles them.\n\nThe fold is a grouping pass over the message list, and it carries more than tool calls. Thinking blocks are absorbed into the same groups, and a group's summary line is the only place the main screen shows thinking — a raw thinking block renders nothing outside Ctrl+O or verbose mode. An earlier version of this patch dismantled groups wholesale, which made every thought invisible and dropped hook summaries absorbed mid-group. This one leaves the grouping pass untouched and only stops tool calls from being admitted to it: each call becomes a break point, and everything else groups as before.",
+  "title": "Show tool calls on their own rows instead of folding runs of them into one summary",
+  "description": "The main screen folds runs of tool calls into one summary line. With this patch they show as ordinary rows with their results — reads, searches and directory listings (including the read-only shell commands behind them), MCP calls, memory / workshop / scratchpad writes, REPL, and in fullscreen ToolSearch and other shell commands.\n\nKept folding: the todo and task tools (TodoWrite, TaskCreate, TaskGet, TaskUpdate, TaskList). Upstream absorbs them silently — there is nothing in their rows worth reading — and pops one out only when it fails. Also left as upstream has them: thinking folds into its own 'Thought for Xs' line, and PreToolUse hook summaries and recalled memories are absorbed into whatever group is open when they arrive.\n\nThe fold is a grouping pass over the message list, and a group's summary line is the only place the main screen shows thinking — a raw thinking block renders nothing outside Ctrl+O or verbose mode. So the grouping pass itself is not touched; tool calls are just refused admission to it, each becoming a break point.",
   "risk": "low",
 
-  "sites": [
+  "stages": [
     {
-      "id": "admit-tool-call",
-      "description": "The function the grouping pass asks whether a tool call may join a fold. It is the only point in the chain used for nothing but grouping: the classifier behind it is exported and also feeds the renderer and the recent-activity display, so changing the classifier would reach those too. This one is called only by the grouping pass's per-message cache, and returning null here is how it already says 'not foldable' for any tool it does not recognise.\n\nIdentified as the two-parameter function that handles grouped_tool_use and returns the fold record — toolUseIds, readPaths, isAbsorbedSilently among its fields.",
-      "marker": "isAbsorbedSilently",
-      "match": {
-        "node": "FunctionDeclaration",
-        "where": { "params.length": 2 },
-        "contains": ["type===\"grouped_tool_use\"", "toolUseIds", "isAbsorbedSilently", "readPaths"]
-      },
-      "capture": { "admit": "id.name" },
-      "edit": { "op": "prepend-body", "text": "return null;" },
-      "expect": "required"
+      "id": "find",
+      "sites": [
+        {
+          "id": "admit-tool-call",
+          "description": "The function the grouping pass asks whether a tool call may join a fold. It is the only point in the chain used for nothing but grouping: the classifier behind it is exported and also feeds the renderer and the recent-activity display, so changing the classifier would reach those too. This one is called only by the grouping pass's per-message cache.\n\nIdentified as the two-parameter function that handles grouped_tool_use and returns the fold record — toolUseIds, readPaths, isAbsorbedSilently among its fields.",
+          "marker": "isAbsorbedSilently",
+          "match": {
+            "node": "FunctionDeclaration",
+            "where": { "params.length": 2 },
+            "contains": ["type===\"grouped_tool_use\"", "toolUseIds", "isAbsorbedSilently", "readPaths"]
+          },
+          "capture": { "admit": "id.name" },
+          "expect": "required"
+        }
+      ]
+    },
+    {
+      "id": "narrow",
+      "sites": [
+        {
+          "id": "admission-guard",
+          "within": "admit-tool-call",
+          "description": "`if(!<classification>) return null` — where the function already turns away tools the classifier does not fold. Widened to turn away everything except the todo/task tools.\n\nThose are told apart by popsOutOnError, which the classifier sets true for exactly that list and nothing else: ToolSearch shares the silent-absorb branch but gets false, and REPL does not carry the field. Testing the flag rather than tool names keeps the list where upstream maintains it.",
+          "marker": "isAbsorbedSilently",
+          "match": {
+            "node": "IfStatement",
+            "where": {
+              "test.type": "UnaryExpression",
+              "test.operator": "!",
+              "test.argument.type": "Identifier",
+              "consequent.type": "ReturnStatement",
+              "consequent.argument.value": null
+            }
+          },
+          "capture": { "info": "test.argument.name" },
+          "edit": {
+            "op": "replace-field",
+            "field": "test",
+            "text": "!{{info}}||{{info}}.popsOutOnError!==!0"
+          },
+          "expect": "required"
+        }
+      ]
     }
   ],
 
   "verify": [
     {
       "match": {
-        "node": "FunctionDeclaration",
+        "node": "LogicalExpression",
         "where": {
-          "id.name": "{{admit}}",
-          "body.body.0.type": "ReturnStatement",
-          "body.body.0.argument.value": null
+          "operator": "||",
+          "right.left.property.name": "popsOutOnError"
         }
       },
-      "describe": "tool calls are no longer admitted to a fold"
+      "describe": "only the todo/task tools are still admitted to a fold"
     }
   ]
 }
