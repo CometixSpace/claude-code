@@ -1,93 +1,76 @@
 {
   "id": "disable-collapse-read-search",
-  "title": "Stop folding consecutive Read/Search results into one summary line",
-  "description": "The transcript replaces runs of read and search calls with a single collapsed entry. This passes the individual messages through instead. Brief mode keeps its own collapse pipeline, which is left alone.",
+  "title": "Show each Read/Search call instead of folding them into one summary line",
+  "description": "Consecutive Read, Search and List calls are folded into one summary line on the main screen. This keeps them out of the fold, so each shows as an ordinary tool row with its result. Thinking still folds into its own 'Thought for Xs' line between them.\n\nThe fold is a grouping pass over the message list, and it carries more than tool calls: thinking blocks are absorbed into the same group, and the group's summary line is the only place the main screen shows them — a raw thinking block renders nothing outside Ctrl+O or verbose mode. The earlier version of this patch dismantled the groups wholesale, which made every tool call visible and every thought invisible, and also lost PreToolUse hook summaries absorbed mid-group. Leaving the grouping alone and only declining to classify read/search/list as foldable avoids both: each such call becomes a break point, and the thinking around it groups exactly as before.",
   "risk": "low",
+
   "stages": [
     {
-      "id": "find-creator",
+      "id": "find-classifier",
       "sites": [
         {
-          "id": "creator",
-          "description": "The function building {type:\"collapsed_read_search\"}. Several exist; only the accumulator reads <param>.messages[0], and that is the whole test. Arity is deliberately not part of it — the standalone script pinned params.length to 1 and by 2.1.280 the accumulator takes (e,n), so it would find nothing. Reading the first parameter's messages array is what the function *is*; how many arguments it happens to take is not.",
-          "marker": "collapsed_read_search",
+          "id": "classifier",
+          "description": "The tool classifier deciding what may join a fold: takes (name, input, tools), handles memory, workshop and scratchpad writes, MCP calls and silently absorbed tools, and ends by asking the tool's own isSearchOrReadCommand.",
+          "marker": "isSearchOrReadCommand",
           "match": {
             "node": "FunctionDeclaration",
-            "where": {
-              "params.length": {
-                "gte": 1
-              },
-              "params.0.type": "Identifier"
-            },
-            "contains": "collapsed_read_search",
-            "capture": {
-              "param": "params.0.name"
-            },
-            "has": {
-              "node": "MemberExpression",
-              "where": {
-                "computed": true,
-                "property.value": 0,
-                "object.property.name": "messages",
-                "object.object.name": "{{param}}"
-              }
-            }
+            "where": { "params.length": 3 },
+            "contains": ["isSearchOrReadCommand", "isCollapsible", "isAbsorbedSilently"]
           },
-          "capture": {
-            "creatorFn": "id.name"
+          "expect": "required"
+        },
+        {
+          "id": "read-search-flag",
+          "within": "classifier",
+          "description": "The local combining the tool's own answer — isSearch || isRead || isList. Captured by what it is built from, so the edit below targets that name rather than trusting a minified letter.",
+          "marker": "isSearchOrReadCommand",
+          "match": {
+            "node": "VariableDeclarator",
+            "where": { "id.type": "Identifier", "init.type": "LogicalExpression" },
+            "contains": [".isSearch||", ".isRead"]
           },
+          "capture": { "readSearch": "id.name" },
           "expect": "required"
         }
       ]
     },
     {
-      "id": "unfold",
+      "id": "exclude",
       "sites": [
         {
-          "id": "fold-call",
-          "description": "<arr>.push(<creator>(<state>)) — the fold itself. Rewritten to push each message instead. forEach rather than spread because Function.prototype.apply caps its argument count and transcripts get long; it stays a single expression so it remains valid inside the comma-sequence forming the flush body.",
-          "sameFileAs": "creator",
-          "marker": "collapsed_read_search",
+          "id": "collapsible",
+          "within": "classifier",
+          "description": "`isCollapsible: <readSearch> || (fullscreen ? <bashLike> : false)`. Only the read/search/list operand is dropped. Fullscreen's bash folding, and the MCP, memory-write and other categories returned earlier in the classifier, keep upstream behaviour.",
+          "marker": "isSearchOrReadCommand",
           "match": {
-            "node": "CallExpression",
+            "node": "ObjectExpression",
             "where": {
-              "callee.type": "MemberExpression",
-              "callee.computed": false,
-              "callee.property.name": "push",
-              "callee.object.type": "Identifier",
-              "arguments.length": 1,
-              "arguments.0.type": "CallExpression",
-              "arguments.0.callee.name": "{{creatorFn}}",
-              "arguments.0.arguments.length": {
-                "gte": 1
-              },
-              "arguments.0.arguments.0.type": "Identifier"
-            },
-            "nth": "all"
+              "properties.0.key.name": "isCollapsible",
+              "properties.0.value.type": "LogicalExpression",
+              "properties.0.value.operator": "||",
+              "properties.0.value.left.name": "{{readSearch}}",
+              "properties.1.key.name": "isSearch"
+            }
           },
-          "capture": {
-            "arr": "callee.object.name",
-            "state": "arguments.0.arguments.0.name"
-          },
-          "edit": {
-            "op": "replace",
-            "text": "{{state}}.messages.forEach(__ccppM=>{{arr}}.push(__ccppM))"
-          },
+          "edit": { "op": "replace-field", "field": "properties.0.value.left", "text": "!1" },
           "expect": "required"
         }
       ]
     }
   ],
+
   "verify": [
     {
       "match": {
-        "node": "CallExpression",
+        "node": "ObjectExpression",
         "where": {
-          "callee.property.name": "forEach",
-          "arguments.0.params.0.name": "__ccppM"
+          "properties.0.key.name": "isCollapsible",
+          "properties.0.value.left.type": "UnaryExpression",
+          "properties.0.value.left.argument.value": 1,
+          "properties.1.key.name": "isSearch"
         }
       },
-      "describe": "fold replaced by a per-message pass-through"
+      "describe": "read/search/list no longer classified as foldable"
     }
   ]
 }

@@ -27,7 +27,7 @@ is set, so applying them is harmless on its own.
 | Patch | What it does | Switch | Risk |
 |---|---|---|---|
 | `cleanup-period` | Keep transcripts 9999 days instead of 30 | — | low |
-| `disable-collapse-read-search` | Show each Read/Search result instead of one folded summary | — | low |
+| `disable-collapse-read-search` | Show each Read/Search call instead of one folded summary; thinking still shows | — | low |
 | `enable-keybindings` | Ctrl+C exits instead of aborting the agent loop | — | low |
 | `file-read-limit` | Read accepts files up to 100k tokens instead of 25k | — | medium |
 | `context-limit` | Set the context window for any model | env `CLAUDE_CODE_CONTEXT_LIMIT` | medium |
@@ -61,9 +61,19 @@ fallback constant changes.
 
 ### disable-collapse-read-search
 
-Runs of Read and Search calls are replaced in the transcript by one collapsed
-line. This passes each message through instead. Brief mode has its own
-collapse pipeline and is left alone.
+Runs of Read, Search and List calls are folded on the main screen into one
+summary line. With this patch each shows as an ordinary tool row with its
+result; the thinking between them still folds into its own `Thought for Xs`
+line.
+
+How the fold works matters here. It is a grouping pass over the message list
+that absorbs thinking blocks, PreToolUse hook summaries and memory recalls
+along with the tool calls, and the group's summary line is the only place the
+main screen shows thinking at all — a raw thinking block renders nothing
+outside Ctrl+O or verbose mode. So the patch does not dismantle groups; it
+stops read/search/list from being classified as foldable, which makes each
+such call a break point and leaves everything else grouping as before. Bash
+in fullscreen, MCP calls and memory writes keep upstream's folding.
 
 ### enable-keybindings
 
@@ -323,12 +333,12 @@ first and `has` is resolved against it.
 
 ### Match on meaning, not on surface
 
-Both sites of `disable-collapse-read-search` originally pinned an arity —
-`params.length: 1`, `arguments.length: 1`. By 2.1.280 the creator is
-`N1r(e,n)` and the call is `w.push(N1r(M,h))`, so both find nothing. Reading
-the first parameter's `messages` array is what the function *is*; how many
-arguments it happens to take is not. Prefer `{gte: 1}` and a `has` over an
-exact count.
+The first port of `disable-collapse-read-search` pinned an arity —
+`params.length: 1`, `arguments.length: 1` — as the standalone script did. By
+2.1.280 the creator is `N1r(e,n)` and the call is `w.push(N1r(M,h))`, so both
+found nothing. Reading the first parameter's `messages` array is what the
+function *is*; how many arguments it happens to take is not. Prefer `{gte: 1}`
+and a `has` over an exact count.
 
 ### edit
 
