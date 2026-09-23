@@ -1,0 +1,26 @@
+{
+  "id": "unlock-ultracode",
+  "title": "Offer ultracode (/effort ultracode) on models that only advertise max effort",
+  "description": "Ultracode is xhigh effort plus dynamic workflow orchestration, gated on the model advertising xhigh support. Models such as opus-4-6 and sonnet-4-6 support max effort but are not on that list. Forcing the capability check true unlocks it.",
+  "risk": "high",
+
+  "sites": [
+    {
+      "id": "xhigh-capability",
+      "description": "The xhigh-effort capability check. Three gates depend on it — availability, the resolver that degrades xhigh to high, and the active check requiring exactly \"xhigh\" — so forcing this one true unlocks all three, where the standalone script rewrote each separately. One site instead of three is a smaller surface and cannot get them out of step. Identified as the single one-parameter function mentioning \"xhigh_effort\" alongside a model list.",
+      "marker": "xhigh_effort",
+      "match": {
+        "node": "FunctionDeclaration",
+        "where": { "params.length": 1 },
+        "contains": ["\"xhigh_effort\"", "claude-3-"]
+      },
+      "capture": { "gate": "id.name" },
+      "edit": { "op": "replace-body", "text": "{return!0}" },
+      "expect": "required"
+    }
+  ],
+
+  "verify": [
+    { "contains": "function {{gate}}(e){return!0}", "describe": "xhigh capability check forced true" }
+  ]
+}

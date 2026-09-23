@@ -140,7 +140,7 @@ export function nodeMatches(node, spec, source, outerValues = {}) {
   // known once the function is matched. So the subtree condition is resolved
   // against this node's captures, which is why they are computed first.
   if (spec.has !== undefined || spec.hasNot !== undefined) {
-    const local = { ...outerValues, ...captureFrom(node, spec.capture) };
+    const local = { ...outerValues, ...captureFrom(node, spec.capture, source) };
     const search = (sub) => {
       const resolved = resolveSpec(sub, local);
       let found = false;
@@ -168,9 +168,22 @@ function asArray(v) {
 //
 // A capture that resolves to nothing is not an error here — `required` is
 // enforced by the caller, which knows whether the site is optional.
-export function captureFrom(node, captureSpec) {
+export function captureFrom(node, captureSpec, source) {
   const out = {};
   for (const [name, path] of Object.entries(captureSpec ?? {})) {
+    // "$src:path" captures the source text of a node rather than a field
+    // value. Rewrites that rebuild a whole function body need this: the body
+    // they emit has to call the same factories the original did, and those
+    // are expressions (`Ne()`, `Promise.withResolvers`), not names a field
+    // lookup can return.
+    if (path.startsWith('$src:')) {
+      if (source === undefined) continue;
+      const [target] = readPath(node, path.slice(5));
+      if (target && typeof target.start === 'number') {
+        out[name] = source.slice(target.start, target.end);
+      }
+      continue;
+    }
     const values = readPath(node, path);
     if (values.length > 0) out[name] = values[0];
   }

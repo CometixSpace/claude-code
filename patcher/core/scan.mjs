@@ -130,7 +130,7 @@ async function runStage(stage, ctx, values) {
       }
 
       for (const node of nodes) {
-        const local = captureFrom(node, site.capture);
+        const local = captureFrom(node, site.capture, source);
         Object.assign(captured, local);
         // Each match carries its own captures alongside the running set.
         // With nth:"all" the values differ per node — the fold rewrite in
