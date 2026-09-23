@@ -1,0 +1,46 @@
+{
+  "id": "chrome-local-socket",
+  "title": "Talk to the Chrome extension over its local socket instead of the cloud bridge",
+  "description": "The browser client always takes the cloud WebSocket bridge, which needs OAuth, while the extension's native host listens on a local Unix socket or named pipe. The two never meet and tool calls report \"Browser extension is not connected\". This forces the local path and clears bridgeConfig so bridge-only tools stop being advertised.",
+  "risk": "medium",
+
+  "sites": [
+    {
+      "id": "client-factory",
+      "description": "The one-line dispatch `return ctx.bridgeConfig ? bridge(ctx) : ctx.getSocketPaths ? socket(ctx) : native(ctx)`. Context always injects bridgeConfig, so the other two arms are dead code.\n\nThe two live arms are captured as source rather than named, since they are calls into module-local factories whose minified names change every build. bridgeConfig is cleared rather than the branch merely being skipped: ListTools reads it to decide whether to advertise switch_browser and friends, which cannot work over a socket.\n\nAn earlier attempt read getSocketPaths().length synchronously to prefer the socket. Since 2.1.219 that function is async, so the length was undefined and the patch quietly did nothing. The pool awaits it itself — the factory must only test that the function exists.",
+      "marker": "bridgeConfig",
+      "match": {
+        "node": "FunctionDeclaration",
+        "where": {
+          "params.length": 1,
+          "body.body.length": 1,
+          "body.body.0.type": "ReturnStatement",
+          "body.body.0.argument.type": "ConditionalExpression",
+          "body.body.0.argument.test.property.name": "bridgeConfig",
+          "body.body.0.argument.alternate.type": "ConditionalExpression",
+          "body.body.0.argument.alternate.test.property.name": "getSocketPaths"
+        }
+      },
+      "capture": {
+        "ctx": "params.0.name",
+        "socketArm": "$src:body.body.0.argument.alternate.consequent",
+        "nativeArm": "$src:body.body.0.argument.alternate.alternate"
+      },
+      "edit": {
+        "op": "replace-body",
+        "text": "{if({{ctx}}.bridgeConfig){{ctx}}.bridgeConfig=void 0;return {{ctx}}.getSocketPaths?{{socketArm}}:{{nativeArm}}}"
+      },
+      "expect": "required"
+    }
+  ],
+
+  "verify": [
+    {
+      "match": {
+        "node": "AssignmentExpression",
+        "where": { "left.property.name": "bridgeConfig", "right.type": "UnaryExpression", "right.operator": "void" }
+      },
+      "describe": "bridgeConfig is cleared so the local path is taken"
+    }
+  ]
+}
