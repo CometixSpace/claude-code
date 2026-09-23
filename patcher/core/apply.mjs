@@ -207,19 +207,24 @@ export async function recordAssets(root, patchId, files) {
 
 // Remove what a run added, leaving anything the user changed in place.
 async function removeAssets(root, state) {
+  return removeInstalled(root, Object.values(state).flatMap((entry) => entry.assets ?? []));
+}
+
+// The same, for a list of files as installAssets returned them. Also how an
+// install that fails partway takes back what it had already copied: those
+// files are not recorded yet, so restore would never find them.
+export async function removeInstalled(root, files) {
   const removed = [];
   const dirs = new Set();
 
-  for (const entry of Object.values(state)) {
-    for (const asset of entry.assets ?? []) {
-      const path = join(root, asset.path);
-      try {
-        if ((await stat(path)).size !== asset.bytes) continue;
-        await rm(path, { force: true });
-        removed.push(asset.path);
-        dirs.add(dirname(path));
-      } catch {}
-    }
+  for (const asset of files) {
+    const path = join(root, asset.path);
+    try {
+      if ((await stat(path)).size !== asset.bytes) continue;
+      await rm(path, { force: true });
+      removed.push(asset.path);
+      dirs.add(dirname(path));
+    } catch {}
   }
 
   // Directories the copy created, cleared deepest-first so a nested tree
@@ -279,30 +284,46 @@ export function mergeByFile(compiledPatches) {
 //
 // Verification happens on the new text while the old text is still on disk,
 // so a patch that produces something unparseable leaves the install intact.
-export async function writeFiles(root, merged, { dryRun = false } = {}) {
-  const written = [];
-  const originals = new Map();
-
+//
+// In two halves, because a write that fails partway must fail before the
+// first byte lands. Splicing and re-parsing every file first means an
+// overlap or a rewrite that does not parse — in the third file of five —
+// is found while all five are untouched. Writing as each file passed would
+// leave the first two rewritten, with their originals not yet copied aside.
+export async function prepareWrites(root, merged) {
+  const plan = [];
   for (const [rel, edits] of merged) {
-    const path = join(root, rel);
-    const before = await readFile(path, 'utf8');
+    const before = await readFile(join(root, rel), 'utf8');
     const after = applyEdits(before, edits);
 
+    let ast;
     try {
-      parse(after);
+      ast = parse(after);
     } catch (e) {
       throw new Error(
         `${rel} would not parse after applying `
         + `${[...new Set(edits.map((x) => x.patch))].join(', ')}: ${e.message}`,
       );
     }
-
-    originals.set(rel, before);
-    if (!dryRun) await writeFile(path, after);
-    written.push({ file: rel, edits: edits.length, bytes: after.length - before.length });
+    // The tree is kept: it is the parse of exactly what gets written, which
+    // is what verification needs, and producing it again cost more than the
+    // rest of an apply put together.
+    plan.push({ file: rel, before, after, ast, edits: edits.length, bytes: after.length - before.length });
   }
+  return plan;
+}
 
-  return { written, originals };
+export async function commitWrites(root, plan) {
+  for (const { file, after } of plan) await writeFile(join(root, file), after);
+}
+
+export async function writeFiles(root, merged, { dryRun = false } = {}) {
+  const plan = await prepareWrites(root, merged);
+  if (!dryRun) await commitWrites(root, plan);
+  return {
+    written: plan.map(({ file, edits, bytes }) => ({ file, edits, bytes })),
+    originals: new Map(plan.map(({ file, before }) => [file, before])),
+  };
 }
 
 // Post-write checks a patch declares for itself, beyond "it still parses".
@@ -314,21 +335,32 @@ export async function writeFiles(root, merged, { dryRun = false } = {}) {
 // file has no such anchor. It also has to step over the marker comment now
 // sitting between the rewritten bytes and whatever followed them, which is
 // exactly the kind of incidental detail a predicate should not encode.
-export async function verifyPatch(root, patch, merged, values) {
+//
+// `files` is a Map keyed by file — the patch's own, as compilePatch returns
+// them, so a check looks where that patch wrote rather than in every file the
+// run touched. `parsed` (file → { text, ast }) supplies trees already built;
+// anything not in it is read and parsed once, however many checks ask. Both
+// matter at scale: parsing every written file afresh for each of ~20 checks
+// took 43 seconds against a 9-second scan.
+export async function verifyPatch(root, patch, files, values, { parsed = new Map() } = {}) {
+  const load = async (rel) => {
+    if (!parsed.has(rel)) {
+      const text = await readFile(join(root, rel), 'utf8');
+      let ast = null;
+      try { ast = parse(text); } catch {}
+      parsed.set(rel, { text, ast });
+    }
+    return parsed.get(rel);
+  };
+
   const problems = [];
   for (const check of patch.verify ?? []) {
-    const files = check.file ? [check.file] : [...merged.keys()];
+    const targets = check.file ? [check.file] : [...files.keys()];
     const spec = resolveSpec(check.match, values);
     let seen = false;
-    for (const rel of files) {
-      const text = await readFile(join(root, rel), 'utf8');
-      let ast;
-      try {
-        ast = parse(text);
-      } catch {
-        continue;
-      }
-      if (findMatches(ast, spec, text).length > 0) { seen = true; break; }
+    for (const rel of targets) {
+      const { text, ast } = await load(rel);
+      if (ast && findMatches(ast, spec, text).length > 0) { seen = true; break; }
     }
     if (!seen) problems.push(check.describe ?? JSON.stringify(check.match));
   }
