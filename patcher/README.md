@@ -31,7 +31,52 @@ So the shell owns what every script was reimplementing:
 | Per-file merge | One chunk routinely holds sites from several patches. Writing per patch would have each write clobber the last. |
 | Idempotence | All 14 hand-roll an `ALREADY_PATCHED` check. |
 | Verification | 13 of 14 re-check after writing; 10 re-parse. |
-| Manifest backups | The scripts copy one file to `cli.js.backup`, which cannot restore a multi-file edit. |
+| Pristine originals | The scripts copy one file to `cli.js.backup`, which cannot restore a multi-file edit — and a per-run snapshot restores the wrong thing (see below). |
+
+## Markers: the install describes itself
+
+Every rewrite leaves a comment beside it naming the patch **and the site**:
+
+```js
+var K=9999/*@cc:cleanup-period#declaration*/;
+M.messages.forEach(__ccppM=>w.push(__ccppM))/*@cc:disable-collapse-read-search#fold-call*/
+```
+
+Per-site rather than per-patch, because a patch with several sites can be
+half-present — one rewritten, another skipped — and one marker on the first
+edit cannot tell those apart. `status` reads them back:
+
+```
+[x] cleanup-period                 …
+    #declaration
+[~] some-patch                     …        2/3 sites
+```
+
+`[~]` means the markers are only partly there: something disturbed the install
+after it was patched. The files are the authority; the state file under
+`.claude-patcher/` only records *where to look*, so answering this costs two
+reads instead of a full tree scan.
+
+## Backups: one pristine copy, taken once
+
+Timestamped per-run snapshots look tidier but restore the wrong bytes. Apply A,
+then apply B, and B's snapshot of a shared chunk **already contains A's
+rewrite** — restoring it returns the file to "A applied", not to what npm
+installed. Chain a few runs and there is no way back.
+
+So a file is copied aside the first time any patch touches it and never again:
+
+```
+.claude-patcher/
+  originals/
+    manifest.json      { files: { "chunk-q6mcb18z.js": { patches: [...] } } }
+    chunk-q6mcb18z.js  ← exactly what npm installed
+  applied.json
+```
+
+That makes taking a backup idempotent — re-running `apply` cannot damage it —
+and `restore` always returns the install to pristine. Keeping one patch out of
+several means re-applying it, which is cheap and cannot get the layering wrong.
 
 ## Patch shape
 
@@ -72,7 +117,24 @@ So the shell owns what every script was reimplementing:
 | `node` | AST node type |
 | `where` | dotted path → expected value. `[]` steps into an array (`arguments.[].value`). A value can be `{eq,ne,gt,gte,lt,lte,in,matches,exists}`. |
 | `contains` / `excludes` | tested against the node's own source text; `"/…/flags"` is a regex, anything else a literal substring |
+| `has` / `hasNot` | a shape somewhere inside this node, resolved against **this node's** captures |
 | `nth` | `0` (default), a number, `"last"`, or `"all"` |
+
+`has` is what tells apart two functions that look alike from the outside.
+`disable-collapse-read-search` has several functions building a
+`{type:"collapsed_read_search"}` object; only the accumulator reads
+`<param>.messages[0]` — and `<param>` is that function's own parameter, whose
+minified name is known only once the function is matched. So `capture` runs
+first and `has` is resolved against it.
+
+### Match on meaning, not on surface
+
+Both sites of `disable-collapse-read-search` originally pinned an arity —
+`params.length: 1`, `arguments.length: 1`. By 2.1.280 the creator is
+`N1r(e,n)` and the call is `w.push(N1r(M,h))`, so both find nothing. Reading
+the first parameter's `messages` array is what the function *is*; how many
+arguments it happens to take is not. Prefer `{gte: 1}` and a `has` over an
+exact count.
 
 ### edit
 

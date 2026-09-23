@@ -77,7 +77,39 @@ function fieldMatches(values, expected) {
   return values.some((v) => v === expected);
 }
 
-export function nodeMatches(node, spec, source) {
+// Substitute captured values into a spec.
+//
+// Lives here rather than in the scanner because `has` needs it too: a subtree
+// condition routinely refers to the enclosing node's own capture.
+//
+// A spec naming something uncaptured resolves to undefined rather than
+// throwing — that means the value was never found, and the site should simply
+// not match.
+export function resolveSpec(spec, values) {
+  if (typeof spec === 'string') {
+    const whole = /^\{\{(\w+)\}\}$/.exec(spec);
+    // A lone placeholder keeps the captured value's type — `params.length`
+    // has to stay a number, and "{{n}}" as a string would never compare equal.
+    //
+    // An unknown name is left as-is rather than resolved to undefined. Specs
+    // get resolved twice: once per stage against what earlier stages
+    // captured, then again inside `has` against the matched node's own
+    // captures. Collapsing {{param}} to undefined on the first pass would
+    // hand the subtree a condition that can never hold, and the site would
+    // silently match nothing.
+    if (whole) return whole[1] in values ? values[whole[1]] : spec;
+    return spec.replace(/\{\{(\w+)\}\}/g, (m, k) => (k in values ? String(values[k]) : m));
+  }
+  if (Array.isArray(spec)) return spec.map((s) => resolveSpec(s, values));
+  if (spec && typeof spec === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(spec)) out[k] = resolveSpec(v, values);
+    return out;
+  }
+  return spec;
+}
+
+export function nodeMatches(node, spec, source, outerValues = {}) {
   if (spec.node && node.type !== spec.node) return false;
 
   for (const [path, expected] of Object.entries(spec.where ?? {})) {
@@ -98,7 +130,36 @@ export function nodeMatches(node, spec, source) {
     }
   }
 
+  // `has` / `hasNot`: a shape somewhere inside this node.
+  //
+  // Text alone cannot express what these are for. disable-collapse-read-search
+  // has to tell two functions apart that both build a
+  // {type:"collapsed_read_search"} object; what separates the accumulator from
+  // the single-message wrapper is that it reads `<param>.messages[0]` — and
+  // `<param>` is that function's own parameter, whose minified name is only
+  // known once the function is matched. So the subtree condition is resolved
+  // against this node's captures, which is why they are computed first.
+  if (spec.has !== undefined || spec.hasNot !== undefined) {
+    const local = { ...outerValues, ...captureFrom(node, spec.capture) };
+    const search = (sub) => {
+      const resolved = resolveSpec(sub, local);
+      let found = false;
+      walk(node, (inner) => {
+        if (found || inner === node) return;
+        if (nodeMatches(inner, resolved, source, local)) found = true;
+      });
+      return found;
+    };
+    for (const sub of asArray(spec.has)) if (!search(sub)) return false;
+    for (const sub of asArray(spec.hasNot)) if (search(sub)) return false;
+  }
+
   return true;
+}
+
+function asArray(v) {
+  if (v === undefined) return [];
+  return Array.isArray(v) ? v : [v];
 }
 
 // Pull the values a patch wants to reuse in its replacement text out of a
@@ -139,10 +200,10 @@ export function walk(node, visit) {
 // default of 0 takes the first. The scripts overwhelmingly want the first
 // match and `break`; "all" exists for the sweeps (every 200000 literal, every
 // deny-behavior property).
-export function findMatches(ast, spec, source) {
+export function findMatches(ast, spec, source, values = {}) {
   const hits = [];
   walk(ast, (node) => {
-    if (nodeMatches(node, spec, source)) hits.push(node);
+    if (nodeMatches(node, spec, source, values)) hits.push(node);
   });
   if (hits.length === 0) return [];
   const nth = spec.nth ?? 0;

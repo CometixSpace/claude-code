@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import * as acorn from 'acorn';
-import { findMatches, captureFrom } from './match.mjs';
+import { findMatches, captureFrom, resolveSpec } from './match.mjs';
 
 // ──────────────────────────────────────────────
 //  One pass, all sites
@@ -52,33 +52,13 @@ function passesMarker(source, marker) {
   return markers.some((m) => source.includes(m));
 }
 
-// Substitute captures into a match spec before it is used.
-//
 // A later stage usually has to *search by* what an earlier one found, not
 // just splice it into text. cleanup-period is the plain case: stage 1 reads
 // the constant's name out of `…cleanupPeriodDays ?? CONST`, and stage 2 can
-// only find its declaration by looking for that exact name. Without this the
-// DSL could capture a name and then have no way to match on it.
+// only find its declaration by looking for that exact name.
 //
-// A spec mentioning an uncaptured name resolves to undefined rather than
-// throwing: that means the earlier stage found nothing, and the site should
-// simply not match.
-function resolveSpec(spec, values) {
-  if (typeof spec === 'string') {
-    const whole = /^\{\{(\w+)\}\}$/.exec(spec);
-    // A lone placeholder keeps the captured value's type — `params.length`
-    // has to stay a number, and "{{n}}" as a string would never compare equal.
-    if (whole) return values[whole[1]];
-    return spec.replace(/\{\{(\w+)\}\}/g, (m, k) => (k in values ? String(values[k]) : m));
-  }
-  if (Array.isArray(spec)) return spec.map((s) => resolveSpec(s, values));
-  if (spec && typeof spec === 'object') {
-    const out = {};
-    for (const [k, v] of Object.entries(spec)) out[k] = resolveSpec(v, values);
-    return out;
-  }
-  return spec;
-}
+// resolveSpec itself lives in match.mjs, since subtree conditions need the
+// same substitution against a node's own captures.
 
 // Collect the sites of one stage across the tree.
 //
@@ -149,8 +129,14 @@ async function runStage(stage, ctx, values) {
       }
 
       for (const node of nodes) {
-        Object.assign(captured, captureFrom(node, site.capture));
-        found.push({ site, file: rel, node, source });
+        const local = captureFrom(node, site.capture);
+        Object.assign(captured, local);
+        // Each match carries its own captures alongside the running set.
+        // With nth:"all" the values differ per node — the fold rewrite in
+        // disable-collapse-read-search reads a different array and state
+        // variable at every call site — and compiling all of them against
+        // one shared object would give every rewrite the last match's names.
+        found.push({ site, file: rel, node, source, values: { ...captured, ...local } });
         // Recorded so a later site can anchor to this one's file.
         const seen = ctx.siteFiles.get(site.id) ?? [];
         if (!seen.includes(rel)) seen.push(rel);

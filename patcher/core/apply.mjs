@@ -23,14 +23,34 @@ import { parse } from './scan.mjs';
 
 const BACKUP_DIR = '.claude-patcher';
 
-// Idempotence marker, written as a comment so it survives in the source and
-// costs nothing at runtime.
-export function patchMarker(patchId) {
-  return `/*@cc-patch:${patchId}*/`;
+// ──────────────────────────────────────────────
+//  Markers
+//
+//  Every edit carries one, naming both the patch and the site it came from.
+//  A comment costs nothing at runtime and survives in the source, which makes
+//  the install self-describing: what is applied can be read off the files
+//  themselves rather than trusted from a state file that may have gone stale.
+//
+//  Per-site rather than per-patch, because a patch with several sites can
+//  only be half-present — one site rewritten, another silently skipped — and
+//  a single marker on the first edit cannot tell those apart.
+// ──────────────────────────────────────────────
+
+const MARKER_PREFIX = '@cc:';
+
+export function siteMarker(patchId, siteId) {
+  return `/*${MARKER_PREFIX}${patchId}#${siteId}*/`;
 }
 
 export function isApplied(source, patchId) {
-  return source.includes(patchMarker(patchId));
+  return source.includes(`${MARKER_PREFIX}${patchId}#`);
+}
+
+// Which sites of a patch are present in a source text. Lets `status` say
+// "3 of 4 sites" instead of a bare yes/no.
+export function appliedSites(source, patchId) {
+  const re = new RegExp(`@cc:${patchId.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}#([\\w-]+)`, 'g');
+  return [...new Set([...source.matchAll(re)].map((m) => m[1]))];
 }
 
 // ──────────────────────────────────────────────
@@ -62,9 +82,13 @@ async function writeState(root, state) {
   await writeFile(join(root, STATE_FILE), `${JSON.stringify(state, null, 2)}\n`);
 }
 
-export async function recordApplied(root, patchIds, files) {
+// `sites` is recorded so a later run can tell "partly applied" from "fully
+// applied" — the marker count on disk is compared against what was written.
+export async function recordApplied(root, entries) {
   const state = await readState(root);
-  for (const id of patchIds) state[id] = { files, at: new Date().toISOString() };
+  for (const { id, files, sites } of entries) {
+    state[id] = { files, sites, at: new Date().toISOString() };
+  }
   await writeState(root, state);
 }
 
@@ -74,41 +98,50 @@ export async function forgetApplied(root, patchIds) {
   await writeState(root, state);
 }
 
-// Which of `patchIds` are genuinely applied right now: recorded by a previous
-// run *and* still carrying their marker on disk.
+// What is genuinely applied right now: recorded by a previous run *and* still
+// carrying markers on disk. The files are the authority — the state file only
+// says where to look, so that answering this does not cost a full tree read.
+//
+// Returns a Map so callers can report which sites survived, not just whether
+// the patch is present. A patch whose sites are partly gone has been
+// disturbed — by a reinstall over the top, or by an edit from elsewhere — and
+// that reads very differently from cleanly applied.
 export async function resolveApplied(root, patchIds) {
   const state = await readState(root);
-  const applied = new Set();
+  const applied = new Map();
+
   for (const id of patchIds) {
     const entry = state[id];
     if (!entry) continue;
+    const sites = new Set();
     for (const rel of entry.files ?? []) {
       try {
-        if (isApplied(await readFile(join(root, rel), 'utf8'), id)) { applied.add(id); break; }
+        const text = await readFile(join(root, rel), 'utf8');
+        for (const s of appliedSites(text, id)) sites.add(s);
       } catch {}
     }
+    if (sites.size > 0) applied.set(id, { sites: [...sites], expected: entry.sites ?? [] });
   }
   return applied;
 }
 
 // Turn one patch's scan result into splices, grouped by file.
 //
-// The marker is appended to the first edit of the patch rather than written
-// separately: a separate insertion could land in a file the patch otherwise
-// leaves alone, and then restore would miss it.
+// Each edit gets its own marker appended, rather than one marker on the first
+// edit of the patch: the rewritten bytes and the note saying who rewrote them
+// then travel together, so a later run reading the files back can say exactly
+// which sites are present.
 export function compilePatch(patch, scanResult) {
   const byFile = new Map();
-  let markerPlaced = false;
 
-  for (const { site, file, node } of scanResult.sites) {
+  for (const { site, file, node, values } of scanResult.sites) {
     if (!site.edit) continue;
     const edits = Array.isArray(site.edit) ? site.edit : [site.edit];
     for (const edit of edits) {
-      const compiled = compileEdit(edit, node, scanResult.values);
-      if (!markerPlaced) {
-        compiled.text += patchMarker(patch.id);
-        markerPlaced = true;
-      }
+      // Per-match values, not the patch-wide set: with nth:"all" each node
+      // captured its own names.
+      const compiled = compileEdit(edit, node, values ?? scanResult.values);
+      compiled.text += siteMarker(patch.id, site.id);
       compiled.patch = patch.id;
       compiled.site = site.id;
       if (!byFile.has(file)) byFile.set(file, []);
@@ -189,54 +222,86 @@ export async function verifyPatch(root, patch, merged, values) {
 //  Manifest-based backup
 // ──────────────────────────────────────────────
 
-export async function saveBackup(root, originals, patchIds, stamp) {
-  const dir = join(root, BACKUP_DIR, 'backups', stamp);
-  await mkdir(dir, { recursive: true });
+// ──────────────────────────────────────────────
+//  Backups: one pristine copy per file, taken once
+//
+//  Timestamped snapshots per run look tidier but restore the wrong thing.
+//  Apply A, then apply B, and B's snapshot of a shared chunk already contains
+//  A's rewrite — restoring it returns the file to "A applied", not to what
+//  npm installed. Chain enough runs and there is no way back to the original.
+//
+//  So a file is copied the first time any patch touches it and never again.
+//  The copy under originals/ is by definition pristine, which also makes
+//  taking a backup idempotent: re-running apply cannot damage it.
+//
+//  Restore is therefore whole-file: it puts the untouched bytes back and
+//  clears the state. Keeping one patch out of several means re-applying it,
+//  which is cheap and cannot get the layering wrong.
+// ──────────────────────────────────────────────
 
-  const files = [];
+const ORIGINALS_DIR = join(BACKUP_DIR, 'originals');
+const MANIFEST = join(BACKUP_DIR, 'originals', 'manifest.json');
+
+async function readManifest(root) {
+  try {
+    return JSON.parse(await readFile(join(root, MANIFEST), 'utf8'));
+  } catch {
+    return { files: {} };
+  }
+}
+
+// Copy each file's pristine bytes aside, skipping any already held.
+//
+// `originals` holds the text as read just before this run's edits, so it is
+// only pristine for files no previous run touched — which is exactly the set
+// this adds.
+export async function saveOriginals(root, originals, patchIds) {
+  const manifest = await readManifest(root);
+  const added = [];
+
   for (const [rel, text] of originals) {
+    if (manifest.files[rel]) {
+      // Already held from an earlier run. Record the new patch against it so
+      // restore knows everything that touched this file.
+      const owners = new Set(manifest.files[rel].patches ?? []);
+      for (const id of patchIds) owners.add(id);
+      manifest.files[rel].patches = [...owners];
+      continue;
+    }
     // Chunk names are flat, but src/** is not; keep the tree so restore can
     // put a nested file back where it came from.
-    const dest = join(dir, rel);
+    const dest = join(root, ORIGINALS_DIR, rel);
     await mkdir(dirname(dest), { recursive: true });
     await writeFile(dest, text);
-    files.push(rel);
+    manifest.files[rel] = { patches: [...patchIds], bytes: text.length };
+    added.push(rel);
   }
 
-  await writeFile(
-    join(dir, 'manifest.json'),
-    `${JSON.stringify({ stamp, patches: patchIds, files }, null, 2)}\n`,
-  );
-  return { dir, files };
+  await mkdir(join(root, ORIGINALS_DIR), { recursive: true });
+  await writeFile(join(root, MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`);
+  return { added, held: Object.keys(manifest.files).length };
 }
 
-export async function listBackups(root) {
-  const base = join(root, BACKUP_DIR, 'backups');
-  let entries;
-  try {
-    entries = await readdir(base, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const out = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    try {
-      const manifest = JSON.parse(await readFile(join(base, entry.name, 'manifest.json'), 'utf8'));
-      out.push({ ...manifest, dir: join(base, entry.name) });
-    } catch {}
-  }
-  return out.sort((a, b) => String(b.stamp).localeCompare(String(a.stamp)));
+export async function listOriginals(root) {
+  const manifest = await readManifest(root);
+  return Object.entries(manifest.files).map(([file, meta]) => ({ file, ...meta }));
 }
 
-export async function restoreBackup(root, backup) {
-  for (const rel of backup.files) {
-    const text = await readFile(join(backup.dir, rel), 'utf8');
+// Put every held file back and forget everything. Returns what it restored.
+export async function restoreOriginals(root) {
+  const manifest = await readManifest(root);
+  const files = Object.keys(manifest.files);
+  const patches = new Set();
+
+  for (const rel of files) {
+    const text = await readFile(join(root, ORIGINALS_DIR, rel), 'utf8');
     await writeFile(join(root, rel), text);
+    for (const id of manifest.files[rel].patches ?? []) patches.add(id);
   }
-  await rm(backup.dir, { recursive: true, force: true });
-  // The restored bytes no longer carry the markers, so the state has to drop
-  // these too or `status` would keep reporting them as applied.
-  await forgetApplied(root, backup.patches ?? []);
-  return backup.files.length;
+
+  await rm(join(root, ORIGINALS_DIR), { recursive: true, force: true });
+  // The restored bytes carry no markers, so the state has to drop these too
+  // or `status` would keep reporting them as applied.
+  await forgetApplied(root, [...patches]);
+  return { files, patches: [...patches] };
 }

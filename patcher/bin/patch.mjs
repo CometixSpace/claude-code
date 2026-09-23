@@ -8,7 +8,7 @@ import { loadPatches, appliesTo } from '../core/registry.mjs';
 import { createScanContext, scanPatch } from '../core/scan.mjs';
 import {
   compilePatch, mergeByFile, writeFiles, verifyPatch,
-  resolveApplied, recordApplied, saveBackup, listBackups, restoreBackup,
+  resolveApplied, recordApplied, saveOriginals, listOriginals, restoreOriginals,
 } from '../core/apply.mjs';
 
 // ──────────────────────────────────────────────
@@ -72,12 +72,16 @@ ${C.bold}claude-code patcher${C.reset}
   patcher list                    show every patch and whether it applies
   patcher check [id...]           locate sites without writing anything
   patcher apply <id...> [--all]   apply patches
-  patcher status                  what is applied right now
-  patcher restore [--all]         undo the most recent apply (or all)
+  patcher status                  what is applied, site by site
+  patcher restore                 put every touched file back to pristine
 
   --path <cli.js>   target a specific install
-  --json            machine-readable output
   --dry-run         compute and verify the rewrite, write nothing
+
+Each rewrite leaves a /*@cc:<patch>#<site>*/ marker beside it, so what is
+applied can be read off the files. Originals are copied aside the first time
+a file is touched and never overwritten, so restore always returns the bytes
+npm installed — not an intermediate state left by an earlier run.
 `);
 }
 
@@ -115,13 +119,11 @@ async function main() {
   const { cli, layout, version } = await resolveTarget(flags);
 
   if (flags.command === 'restore') {
-    const backups = await listBackups(layout.root);
-    if (backups.length === 0) { warn('no backups to restore'); return; }
-    const targets = flags.all ? backups : [backups[0]];
-    for (const b of targets) {
-      const n = await restoreBackup(layout.root, b);
-      ok(`restored ${n} file(s) from ${b.stamp} (${b.patches.join(', ')})`);
-    }
+    const held = await listOriginals(layout.root);
+    if (held.length === 0) { warn('nothing to restore — no originals held'); return; }
+    const { files, patches } = await restoreOriginals(layout.root);
+    ok(`restored ${files.length} file(s) to their pristine state`
+      + (patches.length ? ` (was: ${patches.join(', ')})` : ''));
     return;
   }
 
@@ -136,8 +138,20 @@ async function main() {
 
   if (flags.command === 'list' || flags.command === 'status') {
     for (const p of applicable) {
-      const mark = appliedIds.has(p.id) ? `${C.green}[x]${C.reset}` : '[ ]';
-      console.log(`  ${mark} ${p.id.padEnd(30)} ${p.title}  ${C.dim}${p.risk ?? ''}${C.reset}`);
+      const state = appliedIds.get(p.id);
+      // A patch whose markers are only partly present was disturbed after it
+      // was applied — worth flagging, since re-applying is blocked while any
+      // marker remains.
+      const partial = state && state.expected.length > 0
+        && state.sites.length < state.expected.length;
+      const mark = !state ? '[ ]'
+        : partial ? `${C.yellow}[~]${C.reset}` : `${C.green}[x]${C.reset}`;
+      const note = partial
+        ? `  ${C.yellow}${state.sites.length}/${state.expected.length} sites${C.reset}` : '';
+      console.log(`  ${mark} ${p.id.padEnd(30)} ${p.title}  ${C.dim}${p.risk ?? ''}${C.reset}${note}`);
+      if (flags.command === 'status' && state) {
+        console.log(`      ${C.dim}${state.sites.map((s) => `#${s}`).join(' ')}${C.reset}`);
+      }
     }
     for (const p of skipped) {
       console.log(`  ${C.dim}( ) ${p.id.padEnd(30)} needs ${p.versions}${C.reset}`);
@@ -162,7 +176,8 @@ async function main() {
   // tool caused, and saying so is noise.
   const pending = [];
   for (const p of selected) {
-    if (appliedIds.has(p.id)) warn(`${p.id}: already applied`);
+    const state = appliedIds.get(p.id);
+    if (state) warn(`${p.id}: already applied (${state.sites.map((s) => `#${s}`).join(' ')})`);
     else pending.push(p);
   }
   if (pending.length === 0) {
@@ -207,11 +222,16 @@ async function main() {
   const { written, originals } = await writeFiles(layout.root, merged, { dryRun: flags.dryRun });
 
   if (!flags.dryRun) {
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const ids = usable.map((u) => u.patch.id);
-    const backup = await saveBackup(layout.root, originals, ids, stamp);
-    await recordApplied(layout.root, ids, [...merged.keys()]);
-    info(`backed up ${backup.files.length} file(s) to ${C.dim}${BACKUP_REL}/${stamp}${C.reset}`);
+    const { added, held } = await saveOriginals(layout.root, originals, ids);
+    await recordApplied(layout.root, usable.map(({ patch, result }) => ({
+      id: patch.id,
+      files: [...compilePatch(patch, result).keys()],
+      sites: [...new Set(result.sites.filter((s) => s.site.edit).map((s) => s.site.id))],
+    })));
+    info(added.length > 0
+      ? `kept ${added.length} pristine copy(ies); ${held} file(s) held in total`
+      : `originals already held for all ${held} touched file(s)`);
 
     for (const { patch, result } of usable) {
       const problems = await verifyPatch(layout.root, patch, merged, result.values);
@@ -228,7 +248,6 @@ async function main() {
   console.log(`\n${flags.dryRun ? 'Dry run — nothing written' : `Applied ${usable.length} patch(es) across ${written.length} file(s)`}\n`);
 }
 
-const BACKUP_REL = '.claude-patcher/backups';
 
 main().catch((e) => {
   err(e.message);

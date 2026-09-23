@@ -6,10 +6,13 @@ import { join } from 'node:path';
 import { realpath } from 'node:fs/promises';
 import * as acorn from 'acorn';
 
-import { findMatches, captureFrom } from '../patcher/core/match.mjs';
+import { findMatches, captureFrom, resolveSpec } from '../patcher/core/match.mjs';
 import { compileEdit, applyEdits, interpolate } from '../patcher/core/edit.mjs';
 import { detectLayout, SINGLE, SPLIT } from '../patcher/core/layout.mjs';
 import { createScanContext, scanPatch } from '../patcher/core/scan.mjs';
+import {
+  compilePatch, appliedSites, isApplied, saveOriginals, restoreOriginals,
+} from '../patcher/core/apply.mjs';
 
 const parse = (src) => acorn.parse(src, { ecmaVersion: 'latest', sourceType: 'module' });
 
@@ -167,6 +170,118 @@ test('scan: a later stage can search by what an earlier one captured', async () 
   // Both sites resolve in chunk-a.js. chunk-b.js declares its own K, and
   // without sameFileAs the second stage would have been free to rewrite it.
   assert.deepEqual([...new Set(result.sites.map((s) => s.file))], ['chunk-a.js']);
+});
+
+test('match: has tests a shape inside the node, against its own capture', () => {
+  // Both functions build the same object; only one reads <param>.messages[0].
+  // That read is the whole distinction, and the parameter's minified name is
+  // only known once the function itself is matched.
+  const src = 'function acc(e,n){return {type:"C",m:e.messages[0]}}'
+    + 'function wrap(e){return {type:"C"}}';
+  const ast = parse(src);
+  const spec = {
+    node: 'FunctionDeclaration',
+    contains: '"C"',
+    capture: { param: 'params.0.name' },
+    has: {
+      node: 'MemberExpression',
+      where: {
+        computed: true,
+        'property.value': 0,
+        'object.property.name': 'messages',
+        'object.object.name': '{{param}}',
+      },
+    },
+    nth: 'all',
+  };
+  assert.deepEqual(findMatches(ast, spec, src).map((n) => n.id.name), ['acc']);
+});
+
+test('match: an unresolved placeholder survives stage-level substitution', () => {
+  // Specs are resolved twice — once per stage, then again inside `has`
+  // against the node's captures. Collapsing an as-yet-unknown name to
+  // undefined on the first pass would leave the subtree unmatchable.
+  const spec = { where: { a: '{{known}}', b: '{{later}}' } };
+  const resolved = resolveSpec(spec, { known: 'X' });
+  assert.equal(resolved.where.a, 'X');
+  assert.equal(resolved.where.b, '{{later}}');
+});
+
+test('scan: nth:"all" gives each match its own captures', async () => {
+  const dir = await tempTree({
+    'cli.js': 'import"./chunk-a.js";\n',
+    'chunk-a.js': 'function C(x){return 1}var p=[],q=[];p.push(C(s1));q.push(C(s2));\n',
+  });
+  const layout = await detectLayout(join(dir, 'cli.js'));
+  const ctx = createScanContext(layout);
+
+  const result = await scanPatch({
+    id: 'demo',
+    sites: [{
+      id: 'calls',
+      marker: 'push',
+      match: {
+        node: 'CallExpression',
+        where: { 'callee.property.name': 'push', 'arguments.0.callee.name': 'C' },
+        nth: 'all',
+      },
+      capture: { arr: 'callee.object.name', state: 'arguments.0.arguments.0.name' },
+      edit: { op: 'replace', text: '{{state}}.forEach(m=>{{arr}}.push(m))' },
+    }],
+  }, ctx);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.sites.length, 2);
+  // Compiled against the shared set, both rewrites would name the last pair.
+  assert.deepEqual(
+    result.sites.map((s) => [s.values.arr, s.values.state]),
+    [['p', 's1'], ['q', 's2']],
+  );
+});
+
+test('apply: every edit carries a marker naming its patch and site', () => {
+  const src = 'var K=30;var J=40;';
+  const ast = parse(src);
+  const nodes = findMatches(ast, { node: 'VariableDeclarator', nth: 'all' }, src);
+  const patch = { id: 'demo' };
+  const result = {
+    values: {},
+    sites: nodes.map((node, i) => ({
+      site: { id: `s${i}`, edit: { op: 'replace-field', field: 'init', text: '1' } },
+      file: 'chunk-a.js', node, values: {},
+    })),
+  };
+  const byFile = compilePatch(patch, result);
+  const out = applyEdits(src, byFile.get('chunk-a.js'));
+  assert.equal(out, 'var K=1/*@cc:demo#s0*/;var J=1/*@cc:demo#s1*/;');
+  // Both sites readable off the text, which is what lets status report
+  // partial application.
+  assert.deepEqual(appliedSites(out, 'demo').sort(), ['s0', 's1']);
+  assert.equal(isApplied(out, 'demo'), true);
+  assert.equal(isApplied(out, 'other'), false);
+});
+
+test('apply: originals are kept once and survive a second patch', async () => {
+  const dir = await tempTree({
+    'cli.js': 'import"./chunk-a.js";\n',
+    'chunk-a.js': 'var K=30;\n',
+  });
+  const pristine = await readFile(join(dir, 'chunk-a.js'), 'utf8');
+
+  // First run stores the untouched bytes.
+  await saveOriginals(dir, new Map([['chunk-a.js', pristine]]), ['p1']);
+  await writeFile(join(dir, 'chunk-a.js'), 'var K=9999;\n');
+
+  // Second run sees the file already modified by the first. A per-run
+  // snapshot would capture "K=9999" here and restore to that.
+  const afterP1 = await readFile(join(dir, 'chunk-a.js'), 'utf8');
+  const { added } = await saveOriginals(dir, new Map([['chunk-a.js', afterP1]]), ['p2']);
+  assert.deepEqual(added, [], 'the second run must not overwrite the original');
+
+  const { files, patches } = await restoreOriginals(dir);
+  assert.deepEqual(files, ['chunk-a.js']);
+  assert.deepEqual(patches.sort(), ['p1', 'p2'], 'both owners are recorded');
+  assert.equal(await readFile(join(dir, 'chunk-a.js'), 'utf8'), pristine);
 });
 
 test('scan: a required site that is absent fails the whole patch', async () => {

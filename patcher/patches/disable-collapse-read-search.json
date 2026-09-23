@@ -1,0 +1,78 @@
+{
+  "id": "disable-collapse-read-search",
+  "title": "Stop folding consecutive Read/Search results into one summary line",
+  "description": "The transcript replaces runs of read and search calls with a single collapsed entry. This passes the individual messages through instead. Brief mode keeps its own collapse pipeline, which is left alone.",
+  "risk": "low",
+
+  "stages": [
+    {
+      "id": "find-creator",
+      "sites": [
+        {
+          "id": "creator",
+          "description": "The function building {type:\"collapsed_read_search\"}. Several exist; only the accumulator reads <param>.messages[0], and that is the whole test. Arity is deliberately not part of it — the standalone script pinned params.length to 1 and by 2.1.280 the accumulator takes (e,n), so it would find nothing. Reading the first parameter's messages array is what the function *is*; how many arguments it happens to take is not.",
+          "marker": "collapsed_read_search",
+          "match": {
+            "node": "FunctionDeclaration",
+            "where": { "params.length": { "gte": 1 }, "params.0.type": "Identifier" },
+            "contains": "collapsed_read_search",
+            "capture": { "param": "params.0.name" },
+            "has": {
+              "node": "MemberExpression",
+              "where": {
+                "computed": true,
+                "property.value": 0,
+                "object.property.name": "messages",
+                "object.object.name": "{{param}}"
+              }
+            }
+          },
+          "capture": { "creatorFn": "id.name" },
+          "expect": "required"
+        }
+      ]
+    },
+    {
+      "id": "unfold",
+      "sites": [
+        {
+          "id": "fold-call",
+          "description": "<arr>.push(<creator>(<state>)) — the fold itself. Rewritten to push each message instead. forEach rather than spread because Function.prototype.apply caps its argument count and transcripts get long; it stays a single expression so it remains valid inside the comma-sequence forming the flush body.",
+          "sameFileAs": "creator",
+          "marker": "collapsed_read_search",
+          "match": {
+            "node": "CallExpression",
+            "where": {
+              "callee.type": "MemberExpression",
+              "callee.computed": false,
+              "callee.property.name": "push",
+              "callee.object.type": "Identifier",
+              "arguments.length": 1,
+              "arguments.0.type": "CallExpression",
+              "arguments.0.callee.name": "{{creatorFn}}",
+              "arguments.0.arguments.length": { "gte": 1 },
+              "arguments.0.arguments.0.type": "Identifier"
+            },
+            "nth": "all"
+          },
+          "capture": {
+            "arr": "callee.object.name",
+            "state": "arguments.0.arguments.0.name"
+          },
+          "edit": {
+            "op": "replace",
+            "text": "{{state}}.messages.forEach(__ccppM=>{{arr}}.push(__ccppM))"
+          },
+          "expect": "required"
+        }
+      ]
+    }
+  ],
+
+  "verify": [
+    {
+      "contains": ".messages.forEach(__ccppM=>",
+      "describe": "fold replaced by a pass-through"
+    }
+  ]
+}
