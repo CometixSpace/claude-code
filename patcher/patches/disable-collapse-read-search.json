@@ -1,7 +1,7 @@
 {
   "id": "disable-collapse-read-search",
   "title": "Show tool calls on their own rows instead of folding runs of them into one summary",
-  "description": "The main screen folds runs of tool calls into one summary line. With this patch they show as ordinary rows with their results — reads, searches and directory listings (including the read-only shell commands behind them), MCP calls, memory / workshop / scratchpad writes, REPL, and in fullscreen ToolSearch and other shell commands.\n\nKept folding: the todo and task tools (TodoWrite, TaskCreate, TaskGet, TaskUpdate, TaskList). Upstream absorbs them silently — there is nothing in their rows worth reading — and pops one out only when it fails. Also left as upstream has them: thinking folds into its own 'Thought for Xs' line, and PreToolUse hook summaries and recalled memories are absorbed into whatever group is open when they arrive.\n\nThe fold is a grouping pass over the message list, and a group's summary line is the only place the main screen shows thinking — a raw thinking block renders nothing outside Ctrl+O or verbose mode. So the grouping pass itself is not touched; tool calls are just refused admission to it, each becoming a break point.",
+  "description": "The main screen folds runs of tool calls into one summary line. With this patch they show as ordinary rows with their results — reads, searches and directory listings (including the read-only shell commands behind them), MCP calls, memory / workshop / scratchpad writes, REPL, and in fullscreen other shell commands.\n\nStill folding, because upstream absorbs them silently and there is nothing in their rows to read: the todo and task tools (TodoWrite, TaskCreate, TaskGet, TaskUpdate, TaskList), which pop out only when they fail, and ToolSearch. Upstream absorbs ToolSearch only in fullscreen; inline it stands alone, draws nothing, and splits the thinking around it into two 'Thought' lines. It is absorbed in both modes here.\n\nThinking still folds into its own 'Thought for Xs' line — the only place the main screen shows it, since a raw thinking block renders nothing outside Ctrl+O or verbose mode — and PreToolUse hook summaries and recalled memories are absorbed into whatever group is open, as upstream does.",
   "risk": "low",
 
   "stages": [
@@ -10,14 +10,35 @@
       "sites": [
         {
           "id": "admit-tool-call",
-          "description": "The function the grouping pass asks whether a tool call may join a fold. It is the only point in the chain used for nothing but grouping: the classifier behind it is exported and also feeds the renderer and the recent-activity display, so changing the classifier would reach those too. This one is called only by the grouping pass's per-message cache.\n\nIdentified as the two-parameter function that handles grouped_tool_use and returns the fold record — toolUseIds, readPaths, isAbsorbedSilently among its fields.",
+          "description": "The function the grouping pass asks whether a tool call may join a fold. Called only by the grouping pass's per-message cache, so narrowing it touches nothing else. Identified as the two-parameter function that handles grouped_tool_use and returns the fold record.",
           "marker": "isAbsorbedSilently",
           "match": {
             "node": "FunctionDeclaration",
             "where": { "params.length": 2 },
             "contains": ["type===\"grouped_tool_use\"", "toolUseIds", "isAbsorbedSilently", "readPaths"]
           },
-          "capture": { "admit": "id.name" },
+          "expect": "required"
+        },
+        {
+          "id": "classifier",
+          "description": "The tool classifier: (name, input, tools), ending by asking the tool's own isSearchOrReadCommand. Exported, and also read by the renderer's REPL progress summary, the recent-activity display and the settle scanner below — none of which draw ToolSearch or count it as a read or search, so widening its ToolSearch branch changes nothing they show.",
+          "marker": "isSearchOrReadCommand",
+          "match": {
+            "node": "FunctionDeclaration",
+            "where": { "params.length": 3 },
+            "contains": ["isSearchOrReadCommand", "isCollapsible", "isAbsorbedSilently", "popsOutOnError"]
+          },
+          "expect": "required"
+        },
+        {
+          "id": "settle-scanner",
+          "description": "Scans back from the end of the list for the last message that is not part of a fold. A fold before that point is finished; one after it is the live fold, drawn as 'Thinking…' with a running timer while the session is busy. It decides 'part of a fold' by asking the classifier — which still calls a Read foldable after this patch stops folding it. Left alone, a thinking group followed by a running Grep would keep saying 'Thinking…' while the Grep executes on its own row below it.",
+          "marker": "recap_fold",
+          "match": {
+            "node": "FunctionDeclaration",
+            "where": { "params.length": 3 },
+            "contains": [".isCollapsible", "redacted_thinking", "grouped_tool_use", "recap_fold", "return-1"]
+          },
           "expect": "required"
         }
       ]
@@ -28,7 +49,7 @@
         {
           "id": "admission-guard",
           "within": "admit-tool-call",
-          "description": "`if(!<classification>) return null` — where the function already turns away tools the classifier does not fold. Widened to turn away everything except the todo/task tools.\n\nThose are told apart by popsOutOnError, which the classifier sets true for exactly that list and nothing else: ToolSearch shares the silent-absorb branch but gets false, and REPL does not carry the field. Testing the flag rather than tool names keeps the list where upstream maintains it.",
+          "description": "`if(!<classification>) return null` becomes: refuse unless the tool is one upstream absorbs silently, and not REPL. That leaves the todo/task tools and ToolSearch — REPL shares the silent-absorb flag but is running code, and is shown.",
           "marker": "isAbsorbedSilently",
           "match": {
             "node": "IfStatement",
@@ -44,7 +65,46 @@
           "edit": {
             "op": "replace-field",
             "field": "test",
-            "text": "!{{info}}||{{info}}.popsOutOnError!==!0"
+            "text": "!{{info}}||{{info}}.isAbsorbedSilently!==!0||{{info}}.isREPL===!0"
+          },
+          "expect": "required"
+        },
+        {
+          "id": "toolsearch-inline",
+          "within": "classifier",
+          "description": "`if(<fullscreen>() && name===ToolSearch || isTaskTool)` — the fullscreen condition is dropped, keeping only the name comparison, so ToolSearch is absorbed inline too.",
+          "marker": "isSearchOrReadCommand",
+          "match": {
+            "node": "IfStatement",
+            "where": {
+              "test.type": "LogicalExpression",
+              "test.operator": "||",
+              "test.left.type": "LogicalExpression",
+              "test.left.operator": "&&",
+              "test.left.left.type": "CallExpression",
+              "test.left.right.type": "BinaryExpression",
+              "test.left.right.operator": "==="
+            },
+            "has": { "node": "Property", "where": { "key.name": "popsOutOnError" } }
+          },
+          "capture": { "isToolSearch": "$src:test.left.right" },
+          "edit": { "op": "replace-field", "field": "test.left", "text": "{{isToolSearch}}" },
+          "expect": "required"
+        },
+        {
+          "id": "settle-rule",
+          "within": "settle-scanner",
+          "description": "Both `classify(...).isCollapsible` tests — one for a single tool call, one for a parallel group — take the same rule as the admission guard, so 'part of a fold' means what the grouping pass now does.",
+          "marker": "recap_fold",
+          "match": {
+            "node": "MemberExpression",
+            "where": { "property.name": "isCollapsible", "object.type": "CallExpression" },
+            "nth": "all"
+          },
+          "capture": { "classify": "$src:object" },
+          "edit": {
+            "op": "replace",
+            "text": "((__ccppK)=>__ccppK.isAbsorbedSilently===!0&&__ccppK.isREPL!==!0)({{classify}})"
           },
           "expect": "required"
         }
@@ -54,14 +114,25 @@
 
   "verify": [
     {
+      "match": { "node": "LogicalExpression", "where": { "operator": "||", "right.left.property.name": "isREPL" } },
+      "describe": "only silently absorbed tools other than REPL are admitted to a fold"
+    },
+    {
       "match": {
-        "node": "LogicalExpression",
-        "where": {
-          "operator": "||",
-          "right.left.property.name": "popsOutOnError"
-        }
+        "node": "IfStatement",
+        "where": { "test.operator": "||", "test.left.type": "BinaryExpression", "test.left.operator": "===" },
+        "has": { "node": "Property", "where": { "key.name": "popsOutOnError" } }
       },
-      "describe": "only the todo/task tools are still admitted to a fold"
+      "describe": "ToolSearch is absorbed outside fullscreen too"
+    },
+    {
+      "match": {
+        "node": "FunctionDeclaration",
+        "where": { "params.length": 3 },
+        "contains": ["__ccppK", "recap_fold"],
+        "excludes": ".isCollapsible"
+      },
+      "describe": "the settle scanner follows the same rule"
     }
   ]
 }

@@ -134,7 +134,7 @@ node patcher/bin/patch.mjs restore
 | Patch | What it does |
 |---|---|
 | `cleanup-period` | Keep transcripts 9999 days instead of 30 |
-| `disable-collapse-read-search` | Tool calls on their own rows instead of a folded summary; todo/task tools and thinking still fold |
+| `disable-collapse-read-search` | Tool calls on their own rows instead of a folded summary; todo/task tools, ToolSearch and thinking still fold |
 | `enable-keybindings` | Ctrl+C exits instead of aborting the agent loop |
 | `file-read-limit` | Read accepts files up to 100k tokens |
 | `context-limit` | `CLAUDE_CODE_CONTEXT_LIMIT` sets the context window for any model |
