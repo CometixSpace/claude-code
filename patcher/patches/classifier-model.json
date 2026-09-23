@@ -3,7 +3,6 @@
   "title": "Run the auto-mode safety classifier on a cheaper model",
   "description": "Auto mode classifies every tool call for safety using the same model as the conversation, so an Opus session pays Opus rates for a classification task Haiku handles well. Set CLAUDE_CLASSIFIER_MODEL to override it, e.g. claude-haiku-4-5-20251001. Unset, nothing changes.",
   "risk": "medium",
-
   "stages": [
     {
       "id": "find-binding",
@@ -14,9 +13,14 @@
           "marker": "classifierModel",
           "match": {
             "node": "Property",
-            "where": { "key.name": "classifierModel", "value.type": "Identifier" }
+            "where": {
+              "key.name": "classifierModel",
+              "value.type": "Identifier"
+            }
           },
-          "capture": { "modelVar": "value.name" },
+          "capture": {
+            "modelVar": "value.name"
+          },
           "expect": "required"
         }
       ]
@@ -31,10 +35,16 @@
           "marker": "classifierStage",
           "match": {
             "node": "FunctionDeclaration",
-            "contains": ["classifierStage:\"xml_s1\"", "classifierStage:\"xml_s2\""],
+            "contains": [
+              "classifierStage:\"xml_s1\"",
+              "classifierStage:\"xml_s2\""
+            ],
             "has": {
               "node": "Property",
-              "where": { "key.name": "classifierModel", "value.name": "{{modelVar}}" }
+              "where": {
+                "key.name": "classifierModel",
+                "value.name": "{{modelVar}}"
+              }
             }
           },
           "edit": {
@@ -46,10 +56,12 @@
       ]
     }
   ],
-
   "verify": [
     {
-      "contains": "if(process.env.CLAUDE_CLASSIFIER_MODEL)",
+      "match": {
+        "node": "IfStatement",
+        "contains": "CLAUDE_CLASSIFIER_MODEL"
+      },
       "describe": "classifier model can be overridden by env"
     }
   ]

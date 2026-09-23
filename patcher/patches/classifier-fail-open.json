@@ -1,0 +1,85 @@
+{
+  "id": "classifier-fail-open",
+  "title": "Ask instead of denying when the auto-mode classifier is unreachable",
+  "description": "When the safety classifier cannot be reached, auto mode fails closed and denies the tool call outright. This turns that one branch into a permission prompt, so a transient classifier outage costs a confirmation rather than a blocked action. Every other deny — including an actual unsafe verdict — is untouched.",
+  "risk": "high",
+  "sites": [
+    {
+      "id": "unavailable-deny",
+      "description": "The fail-closed return inside the classifier-unavailable branch, logged as \"denying with retry guidance (fail closed)\". Six auto-mode denials share this shape; this is the only one whose message carries httpStatus and errorKind — diagnostics that exist precisely because no verdict was obtained — and the only one without noVerdict. Both tests are applied, since either alone would be one incidental property away from matching a real denial.\n\nNot to be confused with the AskUserQuestion path a few lines above, which already falls back to the question dialog, or with the onBlock==\"flag\" path, which returns behavior:\"allow\" with a warning.",
+      "marker": "denying with retry guidance",
+      "match": {
+        "node": "ObjectExpression",
+        "has": [
+          {
+            "node": "Property",
+            "where": {
+              "key.name": "behavior",
+              "value.value": "deny"
+            }
+          },
+          {
+            "node": "Property",
+            "where": {
+              "key.name": "classifier",
+              "value.value": "auto-mode"
+            }
+          }
+        ],
+        "contains": "httpStatus",
+        "excludes": "noVerdict"
+      },
+      "edit": {
+        "op": "replace-field",
+        "field": "properties.0.value",
+        "text": "\"ask\""
+      },
+      "satisfiedWhen": {
+        "node": "ObjectExpression",
+        "has": [
+          {
+            "node": "Property",
+            "where": {
+              "key.name": "behavior",
+              "value.value": "ask"
+            }
+          },
+          {
+            "node": "Property",
+            "where": {
+              "key.name": "classifier",
+              "value.value": "auto-mode"
+            }
+          }
+        ],
+        "contains": "httpStatus"
+      },
+      "expect": "required"
+    }
+  ],
+  "verify": [
+    {
+      "match": {
+        "node": "ObjectExpression",
+        "has": [
+          {
+            "node": "Property",
+            "where": {
+              "key.name": "behavior",
+              "value.value": "ask"
+            }
+          },
+          {
+            "node": "Property",
+            "where": {
+              "key.name": "classifier",
+              "value.value": "auto-mode"
+            }
+          }
+        ],
+        "contains": "httpStatus"
+      },
+      "describe": "the fail-closed branch now asks"
+    }
+  ]
+}

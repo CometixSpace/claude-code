@@ -3,7 +3,6 @@
   "title": "Stop folding consecutive Read/Search results into one summary line",
   "description": "The transcript replaces runs of read and search calls with a single collapsed entry. This passes the individual messages through instead. Brief mode keeps its own collapse pipeline, which is left alone.",
   "risk": "low",
-
   "stages": [
     {
       "id": "find-creator",
@@ -14,9 +13,16 @@
           "marker": "collapsed_read_search",
           "match": {
             "node": "FunctionDeclaration",
-            "where": { "params.length": { "gte": 1 }, "params.0.type": "Identifier" },
+            "where": {
+              "params.length": {
+                "gte": 1
+              },
+              "params.0.type": "Identifier"
+            },
             "contains": "collapsed_read_search",
-            "capture": { "param": "params.0.name" },
+            "capture": {
+              "param": "params.0.name"
+            },
             "has": {
               "node": "MemberExpression",
               "where": {
@@ -27,7 +33,9 @@
               }
             }
           },
-          "capture": { "creatorFn": "id.name" },
+          "capture": {
+            "creatorFn": "id.name"
+          },
           "expect": "required"
         }
       ]
@@ -50,7 +58,9 @@
               "arguments.length": 1,
               "arguments.0.type": "CallExpression",
               "arguments.0.callee.name": "{{creatorFn}}",
-              "arguments.0.arguments.length": { "gte": 1 },
+              "arguments.0.arguments.length": {
+                "gte": 1
+              },
               "arguments.0.arguments.0.type": "Identifier"
             },
             "nth": "all"
@@ -68,11 +78,16 @@
       ]
     }
   ],
-
   "verify": [
     {
-      "contains": ".messages.forEach(__ccppM=>",
-      "describe": "fold replaced by a pass-through"
+      "match": {
+        "node": "CallExpression",
+        "where": {
+          "callee.property.name": "forEach",
+          "arguments.0.params.0.name": "__ccppM"
+        }
+      },
+      "describe": "fold replaced by a per-message pass-through"
     }
   ]
 }

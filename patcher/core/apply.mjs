@@ -2,6 +2,7 @@ import { readFile, writeFile, mkdir, rm, readdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { compileEdit, applyEdits, interpolate } from './edit.mjs';
 import { parse } from './scan.mjs';
+import { findMatches, resolveSpec } from './match.mjs';
 
 // ──────────────────────────────────────────────
 //  Applying, verifying, backing up
@@ -203,17 +204,32 @@ export async function writeFiles(root, merged, { dryRun = false } = {}) {
 // `verify.contains` re-reads the file and asserts the text is there — the
 // cheap version of what the scripts do when they re-parse and walk back to
 // the node they patched.
+// Post-write checks a patch declares for itself, beyond "it still parses".
+//
+// Stated as an AST predicate, the same shape `match` uses, and run against a
+// fresh parse of what was written. Text matching was the wrong tool here even
+// though `match.contains` uses it legitimately: there the text is a node's
+// own source, already delimited by the AST, whereas a check against the whole
+// file has no such anchor. It also has to step over the marker comment now
+// sitting between the rewritten bytes and whatever followed them, which is
+// exactly the kind of incidental detail a predicate should not encode.
 export async function verifyPatch(root, patch, merged, values) {
   const problems = [];
   for (const check of patch.verify ?? []) {
     const files = check.file ? [check.file] : [...merged.keys()];
+    const spec = resolveSpec(check.match, values);
     let seen = false;
     for (const rel of files) {
       const text = await readFile(join(root, rel), 'utf8');
-      const needle = interpolate(check.contains, values);
-      if (text.includes(needle)) { seen = true; break; }
+      let ast;
+      try {
+        ast = parse(text);
+      } catch {
+        continue;
+      }
+      if (findMatches(ast, spec, text).length > 0) { seen = true; break; }
     }
-    if (!seen) problems.push(check.describe ?? check.contains);
+    if (!seen) problems.push(check.describe ?? JSON.stringify(check.match));
   }
   return problems;
 }

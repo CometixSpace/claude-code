@@ -3,7 +3,6 @@
   "title": "Keep chat history instead of deleting it after 30 days",
   "description": "Raises the transcript retention default from 30 days to 9999. The value is only a default — an explicit cleanupPeriodDays in settings still wins.",
   "risk": "low",
-
   "stages": [
     {
       "id": "find-const",
@@ -21,7 +20,9 @@
               "right.type": "Identifier"
             }
           },
-          "capture": { "constName": "right.name" },
+          "capture": {
+            "constName": "right.name"
+          },
           "expect": "required"
         }
       ]
@@ -39,19 +40,30 @@
             "where": {
               "id.name": "{{constName}}",
               "init.type": "Literal",
-              "init.value": { "lte": 365 }
+              "init.value": {
+                "lte": 365
+              }
             }
           },
-          "edit": { "op": "replace-field", "field": "init", "text": "9999" },
+          "edit": {
+            "op": "replace-field",
+            "field": "init",
+            "text": "9999"
+          },
           "expect": "required"
         }
       ]
     }
   ],
-
   "verify": [
     {
-      "contains": "{{constName}}=9999",
+      "match": {
+        "node": "VariableDeclarator",
+        "where": {
+          "id.name": "{{constName}}",
+          "init.value": 9999
+        }
+      },
       "describe": "retention constant now reads 9999"
     }
   ]

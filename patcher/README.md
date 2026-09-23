@@ -106,7 +106,7 @@ several means re-applying it, which is cheap and cannot get the layering wrong.
     }
   ],
 
-  "verify": [{ "contains": "{{constName}}=9999", "describe": "…" }]
+  "verify": [{ "match": { "node": "…", "where": {} }, "describe": "…" }]
 }
 ```
 
@@ -145,6 +145,19 @@ Text may be inline (`text`) or read from `payloads/` (`textFrom`). Injected
 text is bimodal — twelve of the fourteen scripts inject ≤128 characters, but
 `enable-voice-mode` injects 14,453 — so large payloads stay out of the JSON
 where they can be read and diffed.
+
+## Everything is a predicate, including verification
+
+Locating, rewriting and checking all go through the AST. `verify` states the
+shape the rewrite should have produced and is run against a fresh parse of
+what was written — not a text search of the file.
+
+Text matching has exactly one legitimate place: `match.contains`, where the
+text being tested is a node's own source, already delimited by the AST. A
+check against a whole file has no such anchor, and would additionally have to
+step over the marker comment now sitting between the rewritten bytes and
+whatever followed them — precisely the incidental detail a predicate should
+not have to encode.
 
 ## The two things a flat matcher cannot do
 

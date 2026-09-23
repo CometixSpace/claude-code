@@ -3,7 +3,6 @@
   "title": "Raise the per-file read limit from 25k tokens to 100k",
   "description": "Read refuses files over 25,000 tokens and tells you to use offset/limit instead. This raises the default ceiling. An explicit maxTokens in settings still wins, since the constant is only the fallback.",
   "risk": "medium",
-
   "stages": [
     {
       "id": "find-const",
@@ -21,7 +20,9 @@
               "value.right.type": "Identifier"
             }
           },
-          "capture": { "limitConst": "value.right.name" },
+          "capture": {
+            "limitConst": "value.right.name"
+          },
           "expect": "required"
         }
       ]
@@ -39,17 +40,31 @@
             "where": {
               "id.name": "{{limitConst}}",
               "init.type": "Literal",
-              "init.value": { "gte": 1 }
+              "init.value": {
+                "gte": 1
+              }
             }
           },
-          "edit": { "op": "replace-field", "field": "init", "text": "100000" },
+          "edit": {
+            "op": "replace-field",
+            "field": "init",
+            "text": "100000"
+          },
           "expect": "required"
         }
       ]
     }
   ],
-
   "verify": [
-    { "contains": "{{limitConst}}=100000", "describe": "read limit constant now reads 100000" }
+    {
+      "match": {
+        "node": "VariableDeclarator",
+        "where": {
+          "id.name": "{{limitConst}}",
+          "init.value": 100000
+        }
+      },
+      "describe": "read limit constant now reads 100000"
+    }
   ]
 }

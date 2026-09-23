@@ -3,7 +3,6 @@
   "title": "Let CLAUDE_CODE_CONTEXT_LIMIT set the context window for any model",
   "description": "The resolver already reads CLAUDE_CODE_MAX_CONTEXT_TOKENS, but only honours it for models that pass an eligibility check — everything else falls through to the 200000 default. This adds an unconditional short-circuit at the top of the resolver, under a separate variable name so the official one keeps its meaning.",
   "risk": "medium",
-
   "sites": [
     {
       "id": "resolver-guard",
@@ -11,14 +10,21 @@
       "marker": "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
       "match": {
         "node": "FunctionDeclaration",
-        "where": { "params.length": 2 },
+        "where": {
+          "params.length": 2
+        },
         "contains": "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
         "has": {
           "node": "ReturnStatement",
-          "where": { "argument.type": "Literal", "argument.value": 1000000 }
+          "where": {
+            "argument.type": "Literal",
+            "argument.value": 1000000
+          }
         }
       },
-      "capture": { "resolver": "id.name" },
+      "capture": {
+        "resolver": "id.name"
+      },
       "edit": {
         "op": "prepend-body",
         "text": "var __ccppCtx=+process.env.CLAUDE_CODE_CONTEXT_LIMIT;if(Number.isFinite(__ccppCtx)&&__ccppCtx>0)return __ccppCtx;"
@@ -26,10 +32,12 @@
       "expect": "required"
     }
   ],
-
   "verify": [
     {
-      "contains": "var __ccppCtx=+process.env.CLAUDE_CODE_CONTEXT_LIMIT",
+      "match": {
+        "node": "IfStatement",
+        "contains": "__ccppCtx"
+      },
       "describe": "resolver short-circuits on the env var"
     }
   ]

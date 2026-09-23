@@ -3,7 +3,6 @@
   "title": "Unlock keybinding customisation and stop Ctrl+C aborting the agent",
   "description": "Enables ~/.claude/keybindings.json, and restores the 2.0.x behaviour where Ctrl+C exits rather than interrupting the agent loop — Escape still interrupts.",
   "risk": "low",
-
   "sites": [
     {
       "id": "feature-flag",
@@ -19,7 +18,11 @@
           "arguments.1.argument.value": 1
         }
       },
-      "edit": { "op": "replace-field", "field": "arguments.1", "text": "!0" },
+      "edit": {
+        "op": "replace-field",
+        "field": "arguments.1",
+        "text": "!0"
+      },
       "satisfiedWhen": {
         "node": "CallExpression",
         "where": {
@@ -42,12 +45,23 @@
           "value.value": "app:interrupt"
         }
       },
-      "edit": { "op": "replace-value", "text": "\"app:exit\"" },
+      "edit": {
+        "op": "replace-value",
+        "text": "\"app:exit\""
+      },
       "expect": "required"
     }
   ],
-
   "verify": [
-    { "contains": "\"ctrl+c\":\"app:exit\"", "describe": "Ctrl+C now exits" }
+    {
+      "match": {
+        "node": "Property",
+        "where": {
+          "key.value": "ctrl+c",
+          "value.value": "app:exit"
+        }
+      },
+      "describe": "Ctrl+C now exits"
+    }
   ]
 }
