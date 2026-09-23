@@ -1,0 +1,53 @@
+{
+  "id": "enable-keybindings",
+  "title": "Unlock keybinding customisation and stop Ctrl+C aborting the agent",
+  "description": "Enables ~/.claude/keybindings.json, and restores the 2.0.x behaviour where Ctrl+C exits rather than interrupting the agent loop — Escape still interrupts.",
+  "risk": "low",
+
+  "sites": [
+    {
+      "id": "feature-flag",
+      "description": "The gate on keybinding customisation. Optional: on 2.1.280 upstream already ships it as `H(\"…\",!0)`, so there is nothing to force. Kept so the site is noticed if it is ever gated again.",
+      "marker": "tengu_keybinding_customization_release",
+      "match": {
+        "node": "CallExpression",
+        "where": {
+          "arguments.length": 2,
+          "arguments.0.value": "tengu_keybinding_customization_release",
+          "arguments.1.type": "UnaryExpression",
+          "arguments.1.operator": "!",
+          "arguments.1.argument.value": 1
+        }
+      },
+      "edit": { "op": "replace-field", "field": "arguments.1", "text": "!0" },
+      "satisfiedWhen": {
+        "node": "CallExpression",
+        "where": {
+          "arguments.0.value": "tengu_keybinding_customization_release",
+          "arguments.1.argument.value": 0
+        }
+      },
+      "expect": "optional"
+    },
+    {
+      "id": "ctrl-c-binding",
+      "description": "The Global binding table's \"ctrl+c\". The transcript table also binds ctrl+c, to transcript:exit — matching on the value as well as the key is what keeps this off it.",
+      "marker": "app:interrupt",
+      "match": {
+        "node": "Property",
+        "where": {
+          "key.type": "Literal",
+          "key.value": "ctrl+c",
+          "value.type": "Literal",
+          "value.value": "app:interrupt"
+        }
+      },
+      "edit": { "op": "replace-value", "text": "\"app:exit\"" },
+      "expect": "required"
+    }
+  ],
+
+  "verify": [
+    { "contains": "\"ctrl+c\":\"app:exit\"", "describe": "Ctrl+C now exits" }
+  ]
+}

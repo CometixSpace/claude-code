@@ -67,6 +67,7 @@ function passesMarker(source, marker) {
 async function runStage(stage, ctx, values) {
   const { root, files, sources } = ctx;
   const found = [];
+  const satisfied = [];
   const captured = { ...values };
 
   for (const site of stage.sites) {
@@ -147,20 +148,38 @@ async function runStage(stage, ctx, values) {
       if (hits > 0 && matchSpec.nth !== 'all' && site.nthFile !== 'all') break;
     }
 
-    // Zero hits with the marker present everywhere it looked: the text the
-    // site keys on is still in the bundle but the shape around it changed.
-    // That distinction is what tells a retired feature apart from a patch
-    // that has quietly stopped working.
-    if (hits === 0 && nearMisses.length > 0) {
+    // Zero hits can mean two very different things, and `satisfiedWhen`
+    // separates them.
+    //
+    // Upstream moves toward what some patches were forcing. On 2.1.280 the
+    // keybinding gate already reads H("…",!0), so the site matching the
+    // disabled form finds nothing — not because the shape drifted, but
+    // because there is no longer anything to change. Reporting that as
+    // possible drift trains the reader to ignore the warning that matters.
+    if (hits === 0 && site.satisfiedWhen) {
+      const spec = resolveSpec(site.satisfiedWhen, captured);
+      for (const rel of candidates) {
+        const source = sources.get(rel);
+        const ast = source === undefined ? undefined : ctx.asts.get(rel);
+        if (!ast) continue;
+        if (findMatches(ast, spec, source).length > 0) {
+          satisfied.push({ site: site.id, file: rel });
+          break;
+        }
+      }
+    }
+
+    const wasSatisfied = satisfied.some((s) => s.site === site.id);
+    if (hits === 0 && !wasSatisfied && nearMisses.length > 0) {
       ctx.markerOnly.push({ site: site.id, files: nearMisses.map((m) => m.file) });
     }
 
-    if (hits === 0 && (site.expect ?? 'required') === 'required') {
+    if (hits === 0 && !wasSatisfied && (site.expect ?? 'required') === 'required') {
       return { ok: false, missing: site.id, found, captured };
     }
   }
 
-  return { ok: true, found, captured };
+  return { ok: true, found, satisfied, captured };
 }
 
 // Locate every site of one patch. Stages run in order; a required site that
@@ -169,6 +188,7 @@ export async function scanPatch(patch, ctx) {
   const stages = patch.stages ?? [{ id: 'main', sites: patch.sites ?? [] }];
   let values = {};
   const all = [];
+  const allSatisfied = [];
 
   for (const stage of stages) {
     // A stage can declare it only runs when an earlier one captured
@@ -178,13 +198,14 @@ export async function scanPatch(patch, ctx) {
 
     const result = await runStage(stage, ctx, values);
     all.push(...result.found);
+    allSatisfied.push(...(result.satisfied ?? []));
     values = result.captured;
     if (!result.ok) {
-      return { ok: false, missing: result.missing, stage: stage.id, sites: all, values };
+      return { ok: false, missing: result.missing, stage: stage.id, sites: all, satisfied: allSatisfied, values };
     }
   }
 
-  return { ok: true, sites: all, values };
+  return { ok: true, sites: all, satisfied: allSatisfied, values };
 }
 
 // Stage guard. Deliberately not an expression language — the only condition

@@ -1,0 +1,55 @@
+{
+  "id": "file-read-limit",
+  "title": "Raise the per-file read limit from 25k tokens to 100k",
+  "description": "Read refuses files over 25,000 tokens and tells you to use offset/limit instead. This raises the default ceiling. An explicit maxTokens in settings still wins, since the constant is only the fallback.",
+  "risk": "medium",
+
+  "stages": [
+    {
+      "id": "find-const",
+      "sites": [
+        {
+          "id": "limits-default",
+          "description": "maxTokens inside the defaultFileReadingLimits object: `r() ?? <const>`. Anchored on that property name rather than on proximity to a <system-reminder> string — the standalone script matched `=25000,` within 100 characters of one, and 25000 appears in at least six chunks on 2.1.280 as the MCP output cap, a checkpoint size and an artifact threshold. Any of those could sit near that text once the bundle is split.",
+          "marker": "defaultFileReadingLimits",
+          "match": {
+            "node": "Property",
+            "where": {
+              "key.name": "maxTokens",
+              "value.type": "LogicalExpression",
+              "value.operator": "??",
+              "value.right.type": "Identifier"
+            }
+          },
+          "capture": { "limitConst": "value.right.name" },
+          "expect": "required"
+        }
+      ]
+    },
+    {
+      "id": "raise",
+      "sites": [
+        {
+          "id": "declaration",
+          "description": "The declarator that property pointed at. Same-file, since a single-word minified name is only unique within its own module.",
+          "sameFileAs": "limits-default",
+          "marker": "defaultFileReadingLimits",
+          "match": {
+            "node": "VariableDeclarator",
+            "where": {
+              "id.name": "{{limitConst}}",
+              "init.type": "Literal",
+              "init.value": { "gte": 1 }
+            }
+          },
+          "edit": { "op": "replace-field", "field": "init", "text": "100000" },
+          "expect": "required"
+        }
+      ]
+    }
+  ],
+
+  "verify": [
+    { "contains": "{{limitConst}}=100000", "describe": "read limit constant now reads 100000" }
+  ]
+}

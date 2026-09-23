@@ -200,6 +200,11 @@ async function main() {
     for (const s of result.sites) {
       console.log(`      ${C.dim}${s.site.id.padEnd(22)} ${s.file}${C.reset}`);
     }
+    // Sites upstream already satisfies. Worth showing — it is how a patch
+    // quietly becomes redundant — but it is not a failure.
+    for (const s of result.satisfied ?? []) {
+      console.log(`      ${C.dim}${s.site.padEnd(22)} already satisfied upstream${C.reset}`);
+    }
     usable.push({ patch, result });
   }
 
