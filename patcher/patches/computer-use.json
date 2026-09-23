@@ -1,0 +1,50 @@
+{
+  "id": "computer-use",
+  "title": "Enable Computer Use without a Max/Pro subscription or the feature flag",
+  "description": "Computer Use ships complete — the MCP server, the tool set, the session and lock handling are all present — behind a gate requiring a max or pro subscription AND the tengu_malort_pedway flag, whose local default is off. Set CLAUDE_CODE_COMPUTER_USE=1 to take it.\n\nThe HIPAA check in front of that gate is left in place. Unlike the other two it is not a commercial limit: compliance taints arrive from the server's policyLimits, latch once set, and exist to disable exactly this kind of capability in a managed environment. A patched install still honours an organisation's policy.",
+  "risk": "high",
+
+  "sites": [
+    {
+      "id": "gate",
+      "description": "`if(nd(\"hipaa\")) return !1; return <isMaxOrPro>() && <config>().enabled` — the single point the MCP registration consults. The standalone script rewrote three functions; on 2.1.280 they converge here.\n\nThe compliance guard is carried through as source rather than reconstructed, so it keeps working whatever it grows into. The override sits after it, which is what keeps a managed install unaffected.",
+      "marker": "hipaa",
+      "match": {
+        "node": "FunctionDeclaration",
+        "where": {
+          "params.length": 0,
+          "body.body.length": 2,
+          "body.body.0.type": "IfStatement",
+          "body.body.1.type": "ReturnStatement",
+          "body.body.1.argument.type": "LogicalExpression",
+          "body.body.1.argument.operator": "&&",
+          "body.body.1.argument.right.type": "MemberExpression",
+          "body.body.1.argument.right.property.name": "enabled"
+        },
+        "contains": "hipaa"
+      },
+      "capture": {
+        "gate": "id.name",
+        "compliance": "$src:body.body.0",
+        "original": "$src:body.body.1.argument"
+      },
+      "edit": {
+        "op": "replace-body",
+        "text": "{{{compliance}}if(process.env.CLAUDE_CODE_COMPUTER_USE)return!0;return {{original}}}"
+      },
+      "expect": "required"
+    }
+  ],
+
+  "verify": [
+    {
+      "match": {
+        "node": "FunctionDeclaration",
+        "where": { "id.name": "{{gate}}" },
+        "has": { "node": "MemberExpression", "where": { "property.name": "CLAUDE_CODE_COMPUTER_USE" } },
+        "contains": "hipaa"
+      },
+      "describe": "override added while the compliance guard remains"
+    }
+  ]
+}
