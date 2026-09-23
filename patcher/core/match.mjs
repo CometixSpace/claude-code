@@ -59,7 +59,11 @@ function textMatches(text, spec) {
 // One `where` entry. A plain value means equality; an object opens the door to
 // the comparisons the scripts actually use beyond `===`.
 function fieldMatches(values, expected) {
-  if (values.length === 0) return expected === undefined;
+  // A path that yields nothing is the one case `exists: false` is for — a
+  // step through a null (`init.value` on `let x;`) ends here, not at a null.
+  if (values.length === 0) {
+    return expected === undefined || expected?.exists === false;
+  }
   if (expected !== null && typeof expected === 'object' && !Array.isArray(expected)) {
     return values.some((v) => {
       if ('eq' in expected) return v === expected.eq;
