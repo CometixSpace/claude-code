@@ -1,76 +1,36 @@
 {
   "id": "disable-collapse-read-search",
-  "title": "Show each Read/Search call instead of folding them into one summary line",
-  "description": "Consecutive Read, Search and List calls are folded into one summary line on the main screen. This keeps them out of the fold, so each shows as an ordinary tool row with its result. Thinking still folds into its own 'Thought for Xs' line between them.\n\nThe fold is a grouping pass over the message list, and it carries more than tool calls: thinking blocks are absorbed into the same group, and the group's summary line is the only place the main screen shows them — a raw thinking block renders nothing outside Ctrl+O or verbose mode. The earlier version of this patch dismantled the groups wholesale, which made every tool call visible and every thought invisible, and also lost PreToolUse hook summaries absorbed mid-group. Leaving the grouping alone and only declining to classify read/search/list as foldable avoids both: each such call becomes a break point, and the thinking around it groups exactly as before.",
+  "title": "Show every tool call on its own row instead of folding runs of them into one summary",
+  "description": "The main screen folds runs of tool calls — reads, searches, directory listings, the read-only shell commands behind them, MCP calls, memory, workshop and scratchpad writes, task and todo tools, REPL, and in fullscreen other shell commands — into one summary line. With this patch none of them fold: each shows as an ordinary tool row with its result. Thinking between them still folds into its own 'Thought for Xs' line, and PreToolUse hook summaries and recalled memories are handled exactly as upstream handles them.\n\nThe fold is a grouping pass over the message list, and it carries more than tool calls. Thinking blocks are absorbed into the same groups, and a group's summary line is the only place the main screen shows thinking — a raw thinking block renders nothing outside Ctrl+O or verbose mode. An earlier version of this patch dismantled groups wholesale, which made every thought invisible and dropped hook summaries absorbed mid-group. This one leaves the grouping pass untouched and only stops tool calls from being admitted to it: each call becomes a break point, and everything else groups as before.",
   "risk": "low",
 
-  "stages": [
+  "sites": [
     {
-      "id": "find-classifier",
-      "sites": [
-        {
-          "id": "classifier",
-          "description": "The tool classifier deciding what may join a fold: takes (name, input, tools), handles memory, workshop and scratchpad writes, MCP calls and silently absorbed tools, and ends by asking the tool's own isSearchOrReadCommand.",
-          "marker": "isSearchOrReadCommand",
-          "match": {
-            "node": "FunctionDeclaration",
-            "where": { "params.length": 3 },
-            "contains": ["isSearchOrReadCommand", "isCollapsible", "isAbsorbedSilently"]
-          },
-          "expect": "required"
-        },
-        {
-          "id": "read-search-flag",
-          "within": "classifier",
-          "description": "The local combining the tool's own answer — isSearch || isRead || isList. Captured by what it is built from, so the edit below targets that name rather than trusting a minified letter.",
-          "marker": "isSearchOrReadCommand",
-          "match": {
-            "node": "VariableDeclarator",
-            "where": { "id.type": "Identifier", "init.type": "LogicalExpression" },
-            "contains": [".isSearch||", ".isRead"]
-          },
-          "capture": { "readSearch": "id.name" },
-          "expect": "required"
-        }
-      ]
-    },
-    {
-      "id": "exclude",
-      "sites": [
-        {
-          "id": "collapsible",
-          "within": "classifier",
-          "description": "`isCollapsible: <readSearch> || (fullscreen ? <bashLike> : false)`. Only the read/search/list operand is dropped. Fullscreen's bash folding, and the MCP, memory-write and other categories returned earlier in the classifier, keep upstream behaviour.",
-          "marker": "isSearchOrReadCommand",
-          "match": {
-            "node": "ObjectExpression",
-            "where": {
-              "properties.0.key.name": "isCollapsible",
-              "properties.0.value.type": "LogicalExpression",
-              "properties.0.value.operator": "||",
-              "properties.0.value.left.name": "{{readSearch}}",
-              "properties.1.key.name": "isSearch"
-            }
-          },
-          "edit": { "op": "replace-field", "field": "properties.0.value.left", "text": "!1" },
-          "expect": "required"
-        }
-      ]
+      "id": "admit-tool-call",
+      "description": "The function the grouping pass asks whether a tool call may join a fold. It is the only point in the chain used for nothing but grouping: the classifier behind it is exported and also feeds the renderer and the recent-activity display, so changing the classifier would reach those too. This one is called only by the grouping pass's per-message cache, and returning null here is how it already says 'not foldable' for any tool it does not recognise.\n\nIdentified as the two-parameter function that handles grouped_tool_use and returns the fold record — toolUseIds, readPaths, isAbsorbedSilently among its fields.",
+      "marker": "isAbsorbedSilently",
+      "match": {
+        "node": "FunctionDeclaration",
+        "where": { "params.length": 2 },
+        "contains": ["type===\"grouped_tool_use\"", "toolUseIds", "isAbsorbedSilently", "readPaths"]
+      },
+      "capture": { "admit": "id.name" },
+      "edit": { "op": "prepend-body", "text": "return null;" },
+      "expect": "required"
     }
   ],
 
   "verify": [
     {
       "match": {
-        "node": "ObjectExpression",
+        "node": "FunctionDeclaration",
         "where": {
-          "properties.0.key.name": "isCollapsible",
-          "properties.0.value.left.type": "UnaryExpression",
-          "properties.0.value.left.argument.value": 1,
-          "properties.1.key.name": "isSearch"
+          "id.name": "{{admit}}",
+          "body.body.0.type": "ReturnStatement",
+          "body.body.0.argument.value": null
         }
       },
-      "describe": "read/search/list no longer classified as foldable"
+      "describe": "tool calls are no longer admitted to a fold"
     }
   ]
 }

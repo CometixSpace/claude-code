@@ -27,7 +27,7 @@ is set, so applying them is harmless on its own.
 | Patch | What it does | Switch | Risk |
 |---|---|---|---|
 | `cleanup-period` | Keep transcripts 9999 days instead of 30 | — | low |
-| `disable-collapse-read-search` | Show each Read/Search call instead of one folded summary; thinking still shows | — | low |
+| `disable-collapse-read-search` | Every tool call on its own row instead of a folded summary; thinking still folds | — | low |
 | `enable-keybindings` | Ctrl+C exits instead of aborting the agent loop | — | low |
 | `file-read-limit` | Read accepts files up to 100k tokens instead of 25k | — | medium |
 | `context-limit` | Set the context window for any model | env `CLAUDE_CODE_CONTEXT_LIMIT` | medium |
@@ -61,19 +61,26 @@ fallback constant changes.
 
 ### disable-collapse-read-search
 
-Runs of Read, Search and List calls are folded on the main screen into one
-summary line. With this patch each shows as an ordinary tool row with its
-result; the thinking between them still folds into its own `Thought for Xs`
-line.
+The main screen folds runs of tool calls into one summary line. With this
+patch every tool call shows on its own row with its result — reads, searches
+and directory listings (including the read-only shell commands behind them:
+`cat`, `grep`, `ls` and the like), MCP calls, memory / workshop / scratchpad
+writes, the todo and task tools, REPL, and in fullscreen other shell commands.
 
-How the fold works matters here. It is a grouping pass over the message list
-that absorbs thinking blocks, PreToolUse hook summaries and memory recalls
-along with the tool calls, and the group's summary line is the only place the
-main screen shows thinking at all — a raw thinking block renders nothing
-outside Ctrl+O or verbose mode. So the patch does not dismantle groups; it
-stops read/search/list from being classified as foldable, which makes each
-such call a break point and leaves everything else grouping as before. Bash
-in fullscreen, MCP calls and memory writes keep upstream's folding.
+Left as upstream has them:
+
+- **Thinking** still folds into its own `Thought for Xs` line between tool
+  calls. That line is the only place the main screen shows thinking at all —
+  a raw thinking block renders nothing outside Ctrl+O or verbose mode — so the
+  grouping it depends on is kept.
+- **PreToolUse hook summaries** and **recalled memories** follow upstream's
+  rules unchanged: absorbed into a group that is open when they arrive (in
+  practice a thinking group), shown on their own otherwise.
+
+How: the grouping pass asks one function whether a tool call may join a fold,
+and that function now always answers no. It is used for nothing but grouping —
+the classifier behind it also feeds the renderer and the recent-activity
+display, and is left alone.
 
 ### enable-keybindings
 
