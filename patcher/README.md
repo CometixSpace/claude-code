@@ -85,24 +85,16 @@ inert without the addon it feeds audio to.
 
 ```jsonc
 "assets": [{
+  "from": "cometix-asr",
   "to": "vendor/cometix-asr",
-  "perPlatform": true,
-  "fetch": {
-    "repo": "Haleclipse/libcometix-asr",
-    "artifact": "claude-code-enable-voice-mode-{platform}",
-    "commit": "0930548"
-  }
+  "perPlatform": true
 }]
 ```
 
-Only the binary for the running platform is installed — 13MB of addon becomes
-a 3.4MB install, and the other three could not load here anyway. Nor are they
-stored: the build already publishes one bundle per platform, so the tool takes
-the one it needs and caches it under `assets/.cache`. Keeping all four in the
-repository would add ~13MB of binary to the history of every addon update.
-
-`commit` pins the build, so the binary and the adapter driving it stay in
-step. Each bundle is checked against the sha256 published beside it.
+All four platform binaries live under `assets/`, so the patcher works wherever
+it is cloned. `perPlatform` installs only the one that can load here: 13MB of
+addon becomes a 3.4MB install, and the other three would be dead weight in the
+target's vendor directory.
 
 Installed files are tracked apart from originals: restore deletes them rather
 than writing bytes back, and only when still the size it wrote — a file

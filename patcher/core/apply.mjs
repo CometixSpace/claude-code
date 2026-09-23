@@ -1,9 +1,6 @@
 import { readFile, writeFile, mkdir, rm, rmdir, readdir, stat, copyFile } from 'node:fs/promises';
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
-import { openSync } from 'node:fs';
-import { createHash } from 'node:crypto';
 import { compileEdit, applyEdits, interpolate } from './edit.mjs';
 import { parse } from './scan.mjs';
 import { findMatches, resolveSpec } from './match.mjs';
@@ -143,88 +140,18 @@ export async function resolveApplied(root, patchIds) {
 //  Only paths this tool wrote are removed, and only if still identical in
 //  size — a file the user replaced is left alone.
 //
-//  An asset may live outside this repo. Native addons are built elsewhere and
-//  run to several MB per platform; committing them here would put a binary
-//  blob in the history of a repository that otherwise holds text. `source`
-//  names an env var pointing at the build output instead, so the patch
-//  declares what it needs and where it normally comes from without carrying
-//  it.
+//  A native addon ships one binary per platform. All of them live here, so
+//  the patcher works wherever it is cloned, but only the one that can load
+//  is installed — the other three would be dead weight in the target's
+//  vendor directory.
 // ──────────────────────────────────────────────
 
 const ASSET_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'assets');
-const CACHE_DIR = join(ASSET_DIR, '.cache');
 
-// How napi-rs names a platform, which is also how the build publishes one
-// bundle per target.
-function platformTag() {
-  const { platform, arch } = process;
-  if (platform === 'win32') return `${platform}-${arch}-msvc`;
-  if (platform === 'linux') return `${platform}-${arch}-gnu`;
-  return `${platform}-${arch}`;
-}
-
-// Fetch the bundle for this platform, once, into a cache beside the patches.
-//
-// Storing all four here instead would put ~13MB of binary in a repository
-// that otherwise holds text, and add another copy to its history on every
-// addon update — for three files that cannot load on the machine reading
-// them. The build already publishes them per platform, so the tool takes the
-// one it needs at the moment it needs it.
-async function fetchAsset(asset) {
-  const tag = platformTag();
-  const name = asset.fetch.artifact.replace('{platform}', tag);
-  const cached = join(CACHE_DIR, `${asset.fetch.commit ?? 'latest'}-${tag}`);
-
-  try {
-    await stat(join(cached, asset.fetch.entry ?? ''));
-    return cached;
-  } catch {}
-
-  const { repo, commit } = asset.fetch;
-  const list = JSON.parse(execFileSync('gh', [
-    'api', `repos/${repo}/actions/artifacts`, '--paginate',
-    '--jq', `[.artifacts[] | select(.name=="${name}" and .expired==false)]`,
-  ], { encoding: 'utf8', maxBuffer: 32 << 20 }));
-
-  // Pinned by commit so the binary and the adapter that drives it stay in
-  // step; an unpinned patch would silently pick up a later build.
-  const match = commit
-    ? list.find((a) => a.workflow_run?.head_sha?.startsWith(commit))
-    : list.sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
-  if (!match) {
-    throw new Error(`no artifact "${name}"${commit ? ` at ${commit}` : ''} in ${repo}`);
-  }
-
-  await mkdir(cached, { recursive: true });
-  const zip = join(cached, 'artifact.zip');
-  execFileSync('gh', ['api', `repos/${repo}/actions/artifacts/${match.id}/zip`],
-    { stdio: ['ignore', openSync(zip, 'w'), 'inherit'], maxBuffer: 64 << 20 });
-  // The artifact wraps a second zip plus its checksum; unpack both, verifying
-  // the inner one against what the build published with it.
-  execFileSync('unzip', ['-oq', zip, '-d', cached]);
-  const inner = (await readdir(cached)).find((f) => f.endsWith('.zip') && f !== 'artifact.zip');
-  if (inner) {
-    const sums = (await readdir(cached)).find((f) => f === `${inner}.sha256`);
-    if (sums) {
-      const expected = (await readFile(join(cached, sums), 'utf8')).trim().split(/\s+/)[0];
-      const actual = createHash('sha256').update(await readFile(join(cached, inner))).digest('hex');
-      if (expected !== actual) throw new Error(`${name}: sha256 mismatch`);
-    }
-    execFileSync('unzip', ['-oq', join(cached, inner), '-d', cached]);
-  }
-  await rm(zip, { force: true });
-  return cached;
-}
-
-async function assetSource(asset) {
-  // localRoot points the lookup at a directory instead of the cache; the
-  // tests use it so the per-platform filter can be checked without a network.
-  if (asset.localRoot) return join(asset.localRoot, asset.from);
-  if (asset.fetch) {
-    const dir = await fetchAsset(asset);
-    return asset.from === '.' ? dir : join(dir, asset.from);
-  }
-  return join(ASSET_DIR, asset.from);
+// Where an asset's files come from. localRoot exists for the tests, which
+// need the per-platform filter exercised against a synthetic bundle.
+function assetSource(asset) {
+  return join(asset.localRoot ?? ASSET_DIR, asset.from);
 }
 
 // `only` filters a directory's entries, so a four-platform addon ships one
@@ -256,7 +183,7 @@ function platformSuffixes() {
 export async function installAssets(root, patch) {
   const installed = [];
   for (const asset of patch.assets ?? []) {
-    const src = await assetSource(asset);
+    const src = assetSource(asset);
     const dest = join(root, asset.to);
     // A native binary per platform: keep the one that can load, drop the rest.
     const only = asset.perPlatform

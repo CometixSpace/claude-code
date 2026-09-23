@@ -77,13 +77,7 @@
     {
       "from": "cometix-asr",
       "to": "vendor/cometix-asr",
-      "perPlatform": true,
-      "fetch": {
-        "repo": "Haleclipse/libcometix-asr",
-        "artifact": "claude-code-enable-voice-mode-{platform}",
-        "commit": "0930548",
-        "entry": "cometix-asr/index.js"
-      }
+      "perPlatform": true
     }
   ]
 }
