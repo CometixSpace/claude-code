@@ -122,7 +122,8 @@ refuses a non-empty one, so `vendor/` survives on account of ripgrep.
           "capture": { "constName": "right.name" },
           "edit": { "op": "replace", "text": "…" },
           "expect": "required",            // or "optional"
-          "sameFileAs": "another-site",    // scope to where that site matched
+          "sameFileAs": "another-site",    // scope to the file that site matched in
+          "within": "another-site",        // scope to the node that site matched
           "in": "entry"                    // only look at cli.js
         }
       ]

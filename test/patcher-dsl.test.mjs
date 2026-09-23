@@ -325,6 +325,30 @@ test('apply: assets install per platform and restore removes only them', async (
   assert.ok((await stat(join(dir, 'vendor/ripgrep/rg'))).isFile());
 });
 
+test('scan: within confines a site to the node an earlier site matched', async () => {
+  // Two functions destructure the same property names; only the builder's
+  // own locals are wanted.
+  const dir = await tempTree({
+    'cli.js': 'import"./chunk-a.js";\n',
+    'chunk-a.js': 'function other(n){let{settingsData:x}=n;return x}'
+      + 'function builder(n){let{settingsData:r}=n;return[{id:"autoCompact"}]}\n',
+  });
+  const layout = await detectLayout(join(dir, 'cli.js'));
+  const ctx = createScanContext(layout);
+  const result = await scanPatch({
+    id: 'demo',
+    sites: [
+      { id: 'host', marker: 'autoCompact', match: { node: 'FunctionDeclaration', contains: 'autoCompact' } },
+      { id: 'sd', within: 'host', marker: 'autoCompact',
+        match: { node: 'Property', where: { 'key.name': 'settingsData', 'value.type': 'Identifier' } },
+        capture: { sd: 'value.name' } },
+    ],
+  }, ctx);
+  assert.equal(result.ok, true);
+  // Without `within`, the first match in the file is other()'s x.
+  assert.equal(result.values.sd, 'r');
+});
+
 test('scan: a required site that is absent fails the whole patch', async () => {
   const dir = await tempTree({
     'cli.js': 'import"./chunk-a.js";\n',

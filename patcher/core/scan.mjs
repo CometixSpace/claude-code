@@ -90,6 +90,21 @@ async function runStage(stage, ctx, values) {
       }
       candidates = anchor;
     }
+    // `within` narrows further, to the byte range of a node an earlier site
+    // matched. File scope is not enough once the thing being found is a
+    // local of one function: the /config builder destructures
+    // settingsData, setAppState and changeLog into single-letter locals,
+    // and other functions in the same chunk carry properties of the same
+    // names. Only the ones inside that builder are the right bindings.
+    let ranges = null;
+    if (site.within) {
+      const anchors = ctx.siteNodes.get(site.within);
+      if (!anchors || anchors.length === 0) {
+        throw new Error(`site "${site.id}" is within "${site.within}", which matched nothing`);
+      }
+      ranges = anchors;
+      candidates = [...new Set(anchors.map((a) => a.file))];
+    }
     // Resolved per site, not per stage: a site can depend on a capture made
     // by an earlier site in the same stage.
     const matchSpec = resolveSpec(site.match, captured);
@@ -123,7 +138,20 @@ async function runStage(stage, ctx, values) {
       }
       if (ast === null) continue;
 
-      const nodes = findMatches(ast, matchSpec, source);
+      // With a range constraint every candidate has to be seen before `nth`
+      // picks, or the first match in the file — outside the range — would
+      // be taken and then discarded.
+      let nodes;
+      if (ranges) {
+        const inside = findMatches(ast, { ...matchSpec, nth: 'all' }, source)
+          .filter((n) => ranges.some((r) => r.file === rel && n.start >= r.start && n.end <= r.end
+            && !(n.start === r.start && n.end === r.end)));
+        const nth = matchSpec.nth ?? 0;
+        nodes = nth === 'all' ? inside : nth === 'last' ? inside.slice(-1)
+          : inside[nth] ? [inside[nth]] : [];
+      } else {
+        nodes = findMatches(ast, matchSpec, source);
+      }
       if (nodes.length === 0) {
         if (site.marker !== undefined) nearMisses.push({ site: site.id, file: rel });
         continue;
@@ -142,6 +170,9 @@ async function runStage(stage, ctx, values) {
         const seen = ctx.siteFiles.get(site.id) ?? [];
         if (!seen.includes(rel)) seen.push(rel);
         ctx.siteFiles.set(site.id, seen);
+        const spans = ctx.siteNodes.get(site.id) ?? [];
+        spans.push({ file: rel, start: node.start, end: node.end });
+        ctx.siteNodes.set(site.id, spans);
         hits++;
         if (site.nthFile !== 'all' && matchSpec.nth !== 'all') break;
       }
@@ -229,6 +260,7 @@ export function createScanContext({ root, files }) {
     sources: new Map(),   // rel → text, read once
     asts: new Map(),      // rel → AST | null, parsed once
     siteFiles: new Map(), // site id → files it matched in, for sameFileAs
+    siteNodes: new Map(), // site id → node spans it matched, for within
     parseFailures: [],
     markerOnly: [],       // marker present, predicate matched nothing
   };

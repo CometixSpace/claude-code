@@ -1,9 +1,8 @@
 {
   "id": "enable-voice-mode",
-  "title": "Make voice mode available without the official OAuth account and feature flag",
-  "description": "Voice mode is gated on signing in through claude.ai and on the allow_voice_mode flag being granted. This forces the combined gate true, which unlocks the UI and the /voice command. On its own that only opens the door — see voice-asr-backend for supplying transcription.",
+  "title": "Voice mode: lift the gate and expose it in /config",
+  "description": "Voice mode is gated on signing in through claude.ai and on the allow_voice_mode flag. This forces the combined gate true, and adds a Voice mode row (off / hold / tap) to /config, where 2.1.280 offers none — settings.json accepts voiceEnabled, but only /voice could set it. Transcription itself is voice-asr-backend's job.",
   "risk": "high",
-
   "stages": [
     {
       "id": "find-flag-reader",
@@ -14,10 +13,16 @@
           "marker": "allow_voice_mode",
           "match": {
             "node": "FunctionDeclaration",
-            "where": { "params.length": 0, "body.body.length": 1, "body.body.0.type": "ReturnStatement" },
+            "where": {
+              "params.length": 0,
+              "body.body.length": 1,
+              "body.body.0.type": "ReturnStatement"
+            },
             "contains": "allow_voice_mode"
           },
-          "capture": { "flagFn": "id.name" },
+          "capture": {
+            "flagFn": "id.name"
+          },
           "expect": "required"
         }
       ]
@@ -41,22 +46,174 @@
               "body.body.0.argument.right.callee.name": "{{flagFn}}"
             }
           },
-          "capture": { "gate": "id.name" },
-          "edit": { "op": "replace-body", "text": "{return!0}" },
+          "capture": {
+            "gate": "id.name"
+          },
+          "edit": {
+            "op": "replace-body",
+            "text": "{return!0}"
+          },
+          "expect": "required"
+        }
+      ]
+    },
+    {
+      "id": "config-row",
+      "sites": [
+        {
+          "id": "config-builder",
+          "description": "The /config panel builder. Voice mode has no row there on 2.1.280 — not hidden, simply absent; settings.json accepts voiceEnabled and /voice writes it, but the panel never offers it. Identified by building the autoCompact row and destructuring settingsData, setSettingsData, setAppState and changeLog from its argument.",
+          "marker": "id:\"autoCompact\"",
+          "match": {
+            "node": "FunctionDeclaration",
+            "contains": "id:\"autoCompact\"",
+            "has": {
+              "node": "VariableDeclarator",
+              "where": {
+                "id.type": "ObjectPattern"
+              },
+              "contains": [
+                "settingsData:",
+                "setSettingsData:",
+                "setAppState:",
+                "changeLog:"
+              ]
+            }
+          },
+          "expect": "required"
+        },
+        {
+          "id": "bind-sd",
+          "within": "config-builder",
+          "marker": "id:\"autoCompact\"",
+          "description": "The builder's local for `settingsData`, read out of its own destructure of its argument.",
+          "match": {
+            "node": "Property",
+            "where": {
+              "key.name": "settingsData",
+              "value.type": "Identifier"
+            }
+          },
+          "capture": {
+            "sd": "value.name"
+          },
+          "expect": "required"
+        },
+        {
+          "id": "bind-setSd",
+          "within": "config-builder",
+          "marker": "id:\"autoCompact\"",
+          "description": "The builder's local for `setSettingsData`, read out of its own destructure of its argument.",
+          "match": {
+            "node": "Property",
+            "where": {
+              "key.name": "setSettingsData",
+              "value.type": "Identifier"
+            }
+          },
+          "capture": {
+            "setSd": "value.name"
+          },
+          "expect": "required"
+        },
+        {
+          "id": "bind-setApp",
+          "within": "config-builder",
+          "marker": "id:\"autoCompact\"",
+          "description": "The builder's local for `setAppState`, read out of its own destructure of its argument.",
+          "match": {
+            "node": "Property",
+            "where": {
+              "key.name": "setAppState",
+              "value.type": "Identifier"
+            }
+          },
+          "capture": {
+            "setApp": "value.name"
+          },
+          "expect": "required"
+        },
+        {
+          "id": "bind-log",
+          "within": "config-builder",
+          "marker": "id:\"autoCompact\"",
+          "description": "The builder's local for `changeLog`, read out of its own destructure of its argument.",
+          "match": {
+            "node": "Property",
+            "where": {
+              "key.name": "changeLog",
+              "value.type": "Identifier"
+            }
+          },
+          "capture": {
+            "log": "value.name"
+          },
+          "expect": "required"
+        },
+        {
+          "id": "user-settings-writer",
+          "within": "config-builder",
+          "marker": "id:\"autoCompact\"",
+          "description": "The builder's own userSettings writer. Reused rather than calling the storage layer directly: since 2.1.242 writes take a storageV5 argument when one is present, and this helper is where the builder already decides that — the 2.1.241 row called the writer with two arguments and would now skip it.",
+          "match": {
+            "node": "FunctionDeclaration",
+            "where": {
+              "params.length": 1
+            },
+            "contains": "\"userSettings\""
+          },
+          "capture": {
+            "write": "id.name"
+          },
+          "expect": "required"
+        },
+        {
+          "id": "voice-row",
+          "within": "config-builder",
+          "marker": "id:\"autoCompact\"",
+          "description": "Insert the row ahead of Auto-compact, in the same shape as its neighbours: write through the builder's writer, mirror into settingsData and app state, then record the change. Values follow /voice exactly — off, hold, tap — with hold as the mode when turning on from off, as the command does.",
+          "match": {
+            "node": "ObjectExpression",
+            "where": {
+              "properties.0.key.name": "id",
+              "properties.0.value.value": "autoCompact"
+            }
+          },
+          "edit": {
+            "op": "insert-before",
+            "text": "{id:\"voiceMode\",label:\"Voice mode\",value:(({{sd}}?.voice?.enabled??{{sd}}?.voiceEnabled)===!0?({{sd}}?.voice?.mode??\"hold\"):\"off\"),options:[\"off\",\"hold\",\"tap\"],type:\"enum\",async onChange(__ccppMode){const __ccppOn=__ccppMode!==\"off\",__ccppVm=__ccppMode===\"tap\"?\"tap\":__ccppMode===\"hold\"?\"hold\":({{sd}}?.voice?.mode??\"hold\");const __ccppRes=await {{write}}({voiceEnabled:__ccppOn,voice:{...{{sd}}?.voice,enabled:__ccppOn,mode:__ccppVm}});if(__ccppRes?.error)return{error:__ccppRes.error};{{setSd}}((__s)=>({...__s,voiceEnabled:__ccppOn,voice:{...__s?.voice,enabled:__ccppOn,mode:__ccppVm}}));{{setApp}}((__s)=>({...__s,settings:{...__s.settings,voiceEnabled:__ccppOn,voice:{...__s.settings?.voice,enabled:__ccppOn,mode:__ccppVm}}}));{{log}}.record(\"Voice mode\",__ccppMode)}},"
+          },
           "expect": "required"
         }
       ]
     }
   ],
-
   "verify": [
     {
       "match": {
         "node": "FunctionDeclaration",
-        "where": { "id.name": "{{gate}}", "body.body.length": 1 },
-        "has": { "node": "ReturnStatement", "where": { "argument.argument.value": 0 } }
+        "where": {
+          "id.name": "{{gate}}",
+          "body.body.length": 1
+        },
+        "has": {
+          "node": "ReturnStatement",
+          "where": {
+            "argument.argument.value": 0
+          }
+        }
       },
       "describe": "voice gate forced true"
+    },
+    {
+      "match": {
+        "node": "Property",
+        "where": {
+          "key.name": "id",
+          "value.value": "voiceMode"
+        }
+      },
+      "describe": "Voice mode row present in /config"
     }
   ]
 }
