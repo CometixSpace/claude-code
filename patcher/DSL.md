@@ -9,11 +9,11 @@ This is the guide to writing one. [`README.md`](README.md) covers using the
 patches and why the engine is shaped the way it is.
 
 Every example here is run by
-[`test/patcher-dsl-examples.test.mjs`](../test/patcher-dsl-examples.test.mjs):
+[`test/dsl-examples.test.mjs`](test/dsl-examples.test.mjs):
 if one stops being true, a test fails.
 
-Commands are written `patcher …`, short for `node patcher/bin/patch.mjs …`
-(or `pnpm patcher …`).
+Commands are written `patcher …`, short for `node bin/patch.mjs …` run in
+`patcher/` after an `npm install` there.
 
 ## From the script template to a declaration
 
@@ -44,6 +44,7 @@ is filled in.
   "description": "…",           // the bug, its cause, the fix
   "risk": "low",                // low | medium | high, shown by `list`
   "versions": ">=2.1.242",      // optional semver range; outside it, not offered
+  "requires": ["other-patch"],  // optional: patches this one is useless without
 
   "sites": [ … ],               // or "stages": [{ "id", "when"?, "sites": [ … ] }]
   "verify": [ … ],              // optional: what the rewrite must have produced
@@ -552,10 +553,18 @@ A required site that is simply gone:
 `versions` takes the patch out of the list entirely when the installed
 version is outside the range, before any scanning.
 
+`requires` names patches this one does nothing without.
+`voice-asr-backend` replaces the transport of a feature that stays gated
+until `enable-voice-mode` lifts the gate: on its own it applies cleanly and
+changes nothing. Selecting a patch selects what it requires, and taking a
+patch out takes out what requires it. The ids are checked when the patches
+are loaded.
+
 ## Verify
 
 `verify` lists shapes that must be present after writing, as `match`
-predicates run against a fresh parse. Captures are available:
+predicates run against the parse of exactly the bytes written. Captures are
+available:
 
 ```json
 "verify": [{
@@ -564,7 +573,7 @@ predicates run against a fresh parse. Captures are available:
 }]
 ```
 
-By default every file written in the run is searched; `"file": "…"` names
+By default the files this patch wrote are searched; `"file": "…"` names
 one. A failure prints the `describe` text. Verification is AST-only for the
 same reason location is: a text search over a whole file has no anchor, and
 would have to step over the marker comment.

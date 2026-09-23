@@ -125,10 +125,10 @@ number of them, every rewrite marked in place, and `restore` returning each
 file to the bytes npm installed.
 
 ```bash
-git clone https://github.com/CometixSpace/claude-code.git && cd claude-code && npm install
-node patcher/bin/patch.mjs list
-node patcher/bin/patch.mjs apply --all      # or name the ones you want
-node patcher/bin/patch.mjs restore
+git clone https://github.com/CometixSpace/claude-code.git
+cd claude-code/patcher && npm install
+node bin/patch.mjs                 # pick interactively
+node bin/patch.mjs apply --all     # or: apply <id...>, remove <id...>, restore
 ```
 
 | Patch | What it does |
@@ -147,7 +147,8 @@ node patcher/bin/patch.mjs restore
 | `voice-asr-backend` | Transcription through the bundled cometix-asr addon |
 | `computer-use` | `CLAUDE_CODE_COMPUTER_USE=1` enables Computer Use without Max/Pro (interactive sessions, macOS) |
 
-Upgrading the package replaces patched files; run `apply` again afterwards.
+Upgrading the package replaces patched files. The picker remembers what was
+applied and offers it again — one keypress puts it back.
 Details, switches and caveats for each are in [`patcher/README.md`](patcher/README.md).
 
 ## Releases

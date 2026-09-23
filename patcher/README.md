@@ -5,20 +5,34 @@ One scanner shell, patches declared as data. Opt-in changes to an installed
 
 ```bash
 git clone https://github.com/CometixSpace/claude-code.git
-cd claude-code && npm install
+cd claude-code/patcher && npm install     # its own dependencies, not the repo's
 
-node patcher/bin/patch.mjs list                  # every patch, and which are applied
-node patcher/bin/patch.mjs check  <id...>        # locate sites, write nothing
-node patcher/bin/patch.mjs apply  <id...>        # or: apply --all
-node patcher/bin/patch.mjs status                # what is applied, site by site
-node patcher/bin/patch.mjs restore               # everything back to what npm installed
-node patcher/bin/patch.mjs probe  <site json>     # authoring: list every node a match hits
+node bin/patch.mjs                        # the picker
+```
+
+In a terminal with no command, it opens a picker: tick what you want, press
+`a`, and the install is made to match — additions go on top, and taking
+anything out restores the touched files and re-applies the rest in one scan.
+Ticking a patch ticks what it requires (`voice-asr-backend` brings
+`enable-voice-mode`). It draws inline and leaves its log in the scrollback.
+
+The same operations, for scripts:
+
+```bash
+node bin/patch.mjs list                   # every patch, and which are applied
+node bin/patch.mjs check  <id...>         # locate sites, write nothing
+node bin/patch.mjs apply  <id...>         # or: apply --all; required patches come along
+node bin/patch.mjs remove <id...>         # take out, keep the rest
+node bin/patch.mjs status                 # what is applied, site by site
+node bin/patch.mjs restore                # everything back to what npm installed
+node bin/patch.mjs probe  <site json>     # authoring: list every node a match hits
 ```
 
 The global install is found automatically; `--path /path/to/cli.js` targets
-another. Reinstalling or upgrading the package replaces the patched files, so
-run `apply` again afterwards — the version check and site scan decide what
-still fits.
+another. Reinstalling or upgrading the package replaces the patched files.
+What was applied is remembered per install under `~/.cometix/patcher/`, so the
+picker opens with the same patches ticked, and the version check and site
+scan decide what still fits.
 
 ## Patches
 
@@ -172,7 +186,7 @@ Two things:
   has none; `voiceEnabled` was settable only through `/voice`. The row writes
   the same settings `/voice` does, and turning it off keeps the chosen mode.
 
-Transcription is `voice-asr-backend`'s job; apply both.
+Transcription is `voice-asr-backend`'s job, which requires this patch.
 
 ### voice-asr-backend
 
@@ -275,8 +289,10 @@ So a file is copied aside the first time any patch touches it and never again:
 ```
 
 That makes taking a backup idempotent — re-running `apply` cannot damage it —
-and `restore` always returns the install to pristine. Keeping one patch out of
-several means re-applying it, which is cheap and cannot get the layering wrong.
+and `restore` always returns the install to pristine. Taking one patch out of
+several is therefore a restore followed by re-applying the rest, which is what
+`remove` and unticking in the picker do — in one scan, and without any way to
+get the layering wrong.
 
 ## Assets
 
