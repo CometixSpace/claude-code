@@ -116,7 +116,10 @@ async function runStage(stage, ctx, values) {
     // them holds the real shape is the normal case, not a drift signal.
     const nearMisses = [];
 
-    for (const rel of candidates) {
+    for (const [done, rel] of candidates.entries()) {
+      // A full scan takes seconds — 13 patches over 2000 files is about nine
+      // — which is long enough that a front end has to show it moving.
+      ctx.onProgress?.({ site: site.id, done, total: candidates.length });
       let source = sources.get(rel);
       if (source === undefined) {
         source = await readFile(join(root, rel), 'utf8');
@@ -263,6 +266,7 @@ export function createScanContext({ root, files }) {
     siteNodes: new Map(), // site id → node spans it matched, for within
     parseFailures: [],
     markerOnly: [],       // marker present, predicate matched nothing
+    onProgress: null,     // ({ site, done, total }) per candidate file, if set
   };
 }
 

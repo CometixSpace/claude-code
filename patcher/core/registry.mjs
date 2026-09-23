@@ -44,6 +44,10 @@ export function validate(patch, file) {
   const fail = (msg) => { throw new Error(`${file}: ${msg}`); };
   if (!patch.id) fail('missing id');
   if (!patch.title) fail('missing title');
+  if (patch.requires !== undefined
+    && !(Array.isArray(patch.requires) && patch.requires.every((r) => typeof r === 'string'))) {
+    fail('requires must be an array of patch ids');
+  }
 
   const stages = patch.stages ?? (patch.sites ? [{ id: 'main', sites: patch.sites }] : null);
   if (!stages) fail('has neither sites nor stages');
@@ -82,7 +86,59 @@ export async function loadPatches() {
     const raw = JSON.parse(await readFile(join(PATCH_DIR, file), 'utf8'));
     patches.push(await resolvePayloads(validate(raw, file)));
   }
+  return checkRequires(patches);
+}
+
+// `requires` names other patches, so it can only be checked against the
+// whole set. A dangling id would otherwise surface as "no such patch" at
+// apply time, blamed on whatever the user selected.
+export function checkRequires(patches) {
+  const ids = new Set(patches.map((p) => p.id));
+  for (const p of patches) {
+    for (const r of p.requires ?? []) {
+      if (!ids.has(r)) throw new Error(`${p.id} requires "${r}", which is not a patch`);
+    }
+  }
   return patches;
+}
+
+// The selection plus everything it depends on, in registry order.
+//
+// A patch that only works on top of another says so with `requires`:
+// voice-asr-backend replaces the transport of a feature that stays gated
+// until enable-voice-mode lifts the gate, so on its own it applies cleanly
+// and changes nothing. `pulled` maps each id added this way to the patch
+// that asked for it, so a front end can say why it appeared.
+export function withRequires(patches, ids) {
+  const byId = new Map(patches.map((p) => [p.id, p]));
+  const chosen = new Set();
+  const pulled = new Map();
+  const visit = (id, by) => {
+    const p = byId.get(id);
+    if (!p) throw new Error(`no such patch: ${id}`);
+    if (chosen.has(id)) return;
+    chosen.add(id);
+    if (by) pulled.set(id, by);
+    for (const r of p.requires ?? []) visit(r, id);
+  };
+  for (const id of ids) visit(id, null);
+  for (const id of ids) pulled.delete(id);
+  return { ids: patches.filter((p) => chosen.has(p.id)).map((p) => p.id), pulled };
+}
+
+// The other direction: what stops making sense once `ids` are gone.
+export function dependentsOf(patches, ids) {
+  const gone = new Set(ids);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const p of patches) {
+      if (!gone.has(p.id) && (p.requires ?? []).some((r) => gone.has(r))) {
+        gone.add(p.id);
+        grew = true;
+      }
+    }
+  }
+  return patches.filter((p) => gone.has(p.id) && !ids.includes(p.id)).map((p) => p.id);
 }
 
 // Whether a patch declares itself applicable to the installed version.
