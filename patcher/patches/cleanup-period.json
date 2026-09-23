@@ -1,0 +1,58 @@
+{
+  "id": "cleanup-period",
+  "title": "Keep chat history instead of deleting it after 30 days",
+  "description": "Raises the transcript retention default from 30 days to 9999. The value is only a default — an explicit cleanupPeriodDays in settings still wins.",
+  "risk": "low",
+
+  "stages": [
+    {
+      "id": "find-const",
+      "sites": [
+        {
+          "id": "usage-site",
+          "description": "settings.cleanupPeriodDays ?? <const>, inside the `* 24 * 60 * 60 * 1000` age computation",
+          "marker": "cleanupPeriodDays",
+          "match": {
+            "node": "LogicalExpression",
+            "where": {
+              "operator": "??",
+              "left.type": "MemberExpression",
+              "left.property.name": "cleanupPeriodDays",
+              "right.type": "Identifier"
+            }
+          },
+          "capture": { "constName": "right.name" },
+          "expect": "required"
+        }
+      ]
+    },
+    {
+      "id": "raise-default",
+      "sites": [
+        {
+          "id": "declaration",
+          "description": "The declarator the usage site pointed at. Minified names change every release, so it is found by the captured name rather than a literal one — and only in the chunk that captured it, since another chunk has its own unrelated K.",
+          "sameFileAs": "usage-site",
+          "marker": "cleanupPeriodDays",
+          "match": {
+            "node": "VariableDeclarator",
+            "where": {
+              "id.name": "{{constName}}",
+              "init.type": "Literal",
+              "init.value": { "lte": 365 }
+            }
+          },
+          "edit": { "op": "replace-field", "field": "init", "text": "9999" },
+          "expect": "required"
+        }
+      ]
+    }
+  ],
+
+  "verify": [
+    {
+      "contains": "{{constName}}=9999",
+      "describe": "retention constant now reads 9999"
+    }
+  ]
+}
