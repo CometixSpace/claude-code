@@ -20,4 +20,5 @@ jobs:
         with:
           node-version: '24'
       - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm ci --prefix patcher --ignore-scripts --no-audit --no-fund
       - run: npm test

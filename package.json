@@ -11,7 +11,7 @@
     "patch": "node scripts/node-compat-patch.mjs",
     "assemble": "node scripts/assemble-package.mjs",
     "process": "node scripts/fetch-and-process.mjs",
-    "test": "node --test test/*.test.mjs",
+    "test": "node --test test/*.test.mjs patcher/test/*.test.mjs",
     "patcher": "node patcher/bin/patch.mjs"
   },
   "dependencies": {

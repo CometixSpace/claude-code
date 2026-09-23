@@ -6,14 +6,14 @@ import { join } from 'node:path';
 import { realpath } from 'node:fs/promises';
 import * as acorn from 'acorn';
 
-import { findMatches, captureFrom, resolveSpec } from '../patcher/core/match.mjs';
-import { compileEdit, applyEdits, interpolate } from '../patcher/core/edit.mjs';
-import { detectLayout, SINGLE, SPLIT } from '../patcher/core/layout.mjs';
-import { createScanContext, scanPatch } from '../patcher/core/scan.mjs';
+import { findMatches, captureFrom, resolveSpec } from '../core/match.mjs';
+import { compileEdit, applyEdits, interpolate } from '../core/edit.mjs';
+import { detectLayout, SINGLE, SPLIT } from '../core/layout.mjs';
+import { createScanContext, scanPatch } from '../core/scan.mjs';
 import {
   compilePatch, appliedSites, isApplied, saveOriginals, restoreOriginals,
   installAssets, recordAssets, recordApplied,
-} from '../patcher/core/apply.mjs';
+} from '../core/apply.mjs';
 
 const parse = (src) => acorn.parse(src, { ecmaVersion: 'latest', sourceType: 'module' });
 
@@ -293,8 +293,8 @@ test('apply: assets install per platform and restore removes only them', async (
     'vendor/ripgrep/rg': 'binary',
   });
 
-  // The real patch fetches its addon from CI; this stands in a local bundle
-  // with all four platforms so the filter is exercised without a network.
+  // The real patch installs its addon from patcher/assets; this stands in a
+  // local bundle with all four platforms so the filter is exercised here.
   const assetRoot = await realpath(await mkdtemp(join(tmpdir(), 'assets-')));
   const bundle = join(assetRoot, 'addon');
   await mkdir(bundle, { recursive: true });

@@ -4,11 +4,11 @@ import { mkdtemp, writeFile, mkdir, realpath, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { detectLayout } from '../patcher/core/layout.mjs';
-import { createScanContext, scanPatch } from '../patcher/core/scan.mjs';
-import { compilePatch, mergeByFile, writeFiles, verifyPatch } from '../patcher/core/apply.mjs';
-import { applyEdits } from '../patcher/core/edit.mjs';
-import { validate } from '../patcher/core/registry.mjs';
+import { detectLayout } from '../core/layout.mjs';
+import { createScanContext, scanPatch } from '../core/scan.mjs';
+import { compilePatch, mergeByFile, writeFiles, verifyPatch } from '../core/apply.mjs';
+import { applyEdits } from '../core/edit.mjs';
+import { validate } from '../core/registry.mjs';
 
 // ──────────────────────────────────────────────
 //  Every example in patcher/DSL.md, run for real
@@ -334,7 +334,7 @@ test('verify: a predicate over the written files, captures available', async () 
 // ── The template ───────────────────────────────────────────────────────
 
 test('template: validates, and works end to end once its placeholder is real', async () => {
-  const path = new URL('../patcher/templates/patch.template.json', import.meta.url);
+  const path = new URL('../templates/patch.template.json', import.meta.url);
   const template = JSON.parse(await readFile(path, 'utf8'));
   validate(structuredClone(template), 'patch.template.json');
 
