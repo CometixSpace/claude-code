@@ -9,6 +9,7 @@ import { createScanContext, scanPatch } from '../core/scan.mjs';
 import {
   compilePatch, mergeByFile, writeFiles, verifyPatch,
   resolveApplied, recordApplied, saveOriginals, listOriginals, restoreOriginals,
+  installAssets, recordAssets,
 } from '../core/apply.mjs';
 
 // ──────────────────────────────────────────────
@@ -121,9 +122,10 @@ async function main() {
   if (flags.command === 'restore') {
     const held = await listOriginals(layout.root);
     if (held.length === 0) { warn('nothing to restore — no originals held'); return; }
-    const { files, patches } = await restoreOriginals(layout.root);
+    const { files, patches, removedAssets } = await restoreOriginals(layout.root);
     ok(`restored ${files.length} file(s) to their pristine state`
       + (patches.length ? ` (was: ${patches.join(', ')})` : ''));
+    if (removedAssets?.length) info(`removed ${removedAssets.length} installed file(s)`);
     return;
   }
 
@@ -223,6 +225,21 @@ async function main() {
     return;
   }
 
+  // Assets before the rewrites. A payload is inert without the files it
+  // depends on, and a missing asset must fail while the install is still
+  // untouched — the other order leaves the code rewritten with no way back,
+  // since the originals are only recorded once the write succeeds.
+  const installedAssets = [];
+  if (!flags.dryRun) {
+    for (const { patch } of usable) {
+      const files = await installAssets(layout.root, patch);
+      if (files.length === 0) continue;
+      installedAssets.push({ id: patch.id, files });
+      info(`${patch.id}: installed ${files.length} file(s), `
+        + `${(files.reduce((n, f) => n + f.bytes, 0) / 1e6).toFixed(1)}MB`);
+    }
+  }
+
   const merged = mergeByFile(usable.map(({ patch, result }) => compilePatch(patch, result)));
   const { written, originals } = await writeFiles(layout.root, merged, { dryRun: flags.dryRun });
 
@@ -234,6 +251,8 @@ async function main() {
       files: [...compilePatch(patch, result).keys()],
       sites: [...new Set(result.sites.filter((s) => s.site.edit).map((s) => s.site.id))],
     })));
+    // After recordApplied, which creates the entry these attach to.
+    for (const { id, files } of installedAssets) await recordAssets(layout.root, id, files);
     info(added.length > 0
       ? `kept ${added.length} pristine copy(ies); ${held} file(s) held in total`
       : `originals already held for all ${held} touched file(s)`);

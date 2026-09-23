@@ -1,0 +1,10 @@
+{
+  "name": "cometix-asr",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.js",
+  "types": "index.d.ts",
+  "engines": {
+    "node": ">=18"
+  }
+}

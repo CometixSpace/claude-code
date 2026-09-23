@@ -1,5 +1,6 @@
-import { readFile, writeFile, mkdir, rm, readdir } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
+import { readFile, writeFile, mkdir, rm, rmdir, readdir, stat, copyFile } from 'node:fs/promises';
+import { join, dirname, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { compileEdit, applyEdits, interpolate } from './edit.mjs';
 import { parse } from './scan.mjs';
 import { findMatches, resolveSpec } from './match.mjs';
@@ -124,6 +125,118 @@ export async function resolveApplied(root, patchIds) {
     if (sites.size > 0) applied.set(id, { sites: [...sites], expected: entry.sites ?? [] });
   }
   return applied;
+}
+
+// ──────────────────────────────────────────────
+//  Assets
+//
+//  Some patches need files, not only rewrites: voice-asr-backend is inert
+//  without the addon it feeds audio to. Leaving that as a manual step makes
+//  the patch look applied while it cannot work, which is the failure mode
+//  markers and verification exist to prevent everywhere else.
+//
+//  Copied files are tracked separately from originals: they did not exist
+//  before, so restoring means deleting them rather than putting bytes back.
+//  Only paths this tool wrote are removed, and only if still identical in
+//  size — a file the user replaced is left alone.
+//
+//  An asset may live outside this repo. Native addons are built elsewhere and
+//  run to several MB per platform; committing them here would put a binary
+//  blob in the history of a repository that otherwise holds text. `source`
+//  names an env var pointing at the build output instead, so the patch
+//  declares what it needs and where it normally comes from without carrying
+//  it.
+// ──────────────────────────────────────────────
+
+const ASSET_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'assets');
+
+function assetSource(asset) {
+  if (asset.source) {
+    const dir = process.env[asset.source];
+    if (!dir) {
+      throw new Error(`set ${asset.source} to the directory holding "${asset.from}"`);
+    }
+    return join(dir, asset.from === '.' ? '' : asset.from);
+  }
+  return join(ASSET_DIR, asset.from);
+}
+
+// `only` filters a directory's entries, so a four-platform addon ships one
+// binary rather than all of them — the other three cannot load here anyway.
+async function copyAsset(srcPath, destPath, only) {
+  const info = await stat(srcPath);
+  if (!info.isDirectory()) {
+    await mkdir(dirname(destPath), { recursive: true });
+    await copyFile(srcPath, destPath);
+    return [{ path: destPath, bytes: info.size }];
+  }
+  const written = [];
+  for (const entry of await readdir(srcPath, { withFileTypes: true })) {
+    if (only && !only(entry.name)) continue;
+    written.push(...await copyAsset(join(srcPath, entry.name), join(destPath, entry.name), only));
+  }
+  return written;
+}
+
+// Node's platform-arch naming as the napi-rs convention writes it.
+function platformSuffixes() {
+  const { platform, arch } = process;
+  const base = `${platform}-${arch}`;
+  return platform === 'win32' ? [`${base}-msvc`, base]
+    : platform === 'linux' ? [`${base}-gnu`, `${base}-musl`, base]
+      : [base];
+}
+
+export async function installAssets(root, patch) {
+  const installed = [];
+  for (const asset of patch.assets ?? []) {
+    const src = assetSource(asset);
+    const dest = join(root, asset.to);
+    // A native binary per platform: keep the one that can load, drop the rest.
+    const only = asset.perPlatform
+      ? (name) => !name.endsWith('.node') || platformSuffixes().some((s) => name.includes(s))
+      : null;
+    try {
+      const files = await copyAsset(src, dest, only);
+      installed.push(...files.map((f) => ({ ...f, path: relative(root, f.path) })));
+    } catch (e) {
+      throw new Error(`${patch.id}: asset "${asset.from}" could not be installed — ${e.message}`);
+    }
+  }
+  return installed;
+}
+
+export async function recordAssets(root, patchId, files) {
+  const state = await readState(root);
+  if (state[patchId]) state[patchId].assets = files;
+  await writeState(root, state);
+}
+
+// Remove what a run added, leaving anything the user changed in place.
+async function removeAssets(root, state) {
+  const removed = [];
+  const dirs = new Set();
+
+  for (const entry of Object.values(state)) {
+    for (const asset of entry.assets ?? []) {
+      const path = join(root, asset.path);
+      try {
+        if ((await stat(path)).size !== asset.bytes) continue;
+        await rm(path, { force: true });
+        removed.push(asset.path);
+        dirs.add(dirname(path));
+      } catch {}
+    }
+  }
+
+  // Directories the copy created, cleared deepest-first so a nested tree
+  // unwinds. rmdir rather than rm: it refuses a non-empty directory outright,
+  // so a directory shared with the install — vendor/, holding ripgrep — is
+  // safe even if the emptiness check were to race.
+  for (const dir of [...dirs].sort((a, b) => b.length - a.length)) {
+    try { await rmdir(dir); } catch {}
+  }
+  return removed;
 }
 
 // Turn one patch's scan result into splices, grouped by file.
@@ -315,9 +428,12 @@ export async function restoreOriginals(root) {
     for (const id of manifest.files[rel].patches ?? []) patches.add(id);
   }
 
+  const state = await readState(root);
+  const removedAssets = await removeAssets(root, state);
+
   await rm(join(root, ORIGINALS_DIR), { recursive: true, force: true });
   // The restored bytes carry no markers, so the state has to drop these too
   // or `status` would keep reporting them as applied.
   await forgetApplied(root, [...patches]);
-  return { files, patches: [...patches] };
+  return { files, patches: [...patches], removedAssets };
 }

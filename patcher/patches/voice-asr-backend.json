@@ -1,7 +1,7 @@
 {
   "id": "voice-asr-backend",
   "title": "Transcribe voice through the bundled cometix-asr addon",
-  "description": "Replaces the WebSocket voice transport with the cometix-asr addon, so audio is transcribed on the machine instead of streamed to Anthropic. The addon is loaded from vendor/cometix-asr beside the entry; when it is absent the patch reports a load error rather than silently falling back, since the stock path would send the audio off-box.\n\nAudio is signed 16-bit little-endian PCM at 16 kHz mono — what the host already captures, and what feedPcm expects.",
+  "description": "Replaces the WebSocket voice transport with the cometix-asr addon, so audio is transcribed on the machine instead of streamed to Anthropic. The addon is installed into vendor/cometix-asr beside the entry from patcher/assets; when it is absent the patch reports a load error rather than silently falling back, since the stock path would send the audio off-box.\n\nAudio is signed 16-bit little-endian PCM at 16 kHz mono — what the host already captures, and what feedPcm expects.",
   "risk": "high",
   "sites": [
     {
@@ -71,6 +71,13 @@
         }
       },
       "describe": "connector diverts unless CLAUDE_CODE_ASR=0"
+    }
+  ],
+  "assets": [
+    {
+      "from": "cometix-asr",
+      "to": "vendor/cometix-asr",
+      "perPlatform": true
     }
   ]
 }

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, mkdir, readFile } from 'node:fs/promises';
+import { mkdtemp, writeFile, mkdir, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { realpath } from 'node:fs/promises';
@@ -12,6 +12,7 @@ import { detectLayout, SINGLE, SPLIT } from '../patcher/core/layout.mjs';
 import { createScanContext, scanPatch } from '../patcher/core/scan.mjs';
 import {
   compilePatch, appliedSites, isApplied, saveOriginals, restoreOriginals,
+  installAssets, recordAssets, recordApplied,
 } from '../patcher/core/apply.mjs';
 
 const parse = (src) => acorn.parse(src, { ecmaVersion: 'latest', sourceType: 'module' });
@@ -282,6 +283,39 @@ test('apply: originals are kept once and survive a second patch', async () => {
   assert.deepEqual(files, ['chunk-a.js']);
   assert.deepEqual(patches.sort(), ['p1', 'p2'], 'both owners are recorded');
   assert.equal(await readFile(join(dir, 'chunk-a.js'), 'utf8'), pristine);
+});
+
+test('apply: assets install per platform and restore removes only them', async () => {
+  const dir = await tempTree({
+    'cli.js': 'import"./chunk-a.js";\n',
+    'chunk-a.js': 'var K=30;\n',
+    // Something the install already owns, sharing the parent directory.
+    'vendor/ripgrep/rg': 'binary',
+  });
+
+  // The asset source lives under patcher/assets; point at the real one so the
+  // per-platform filter is exercised against actual napi-rs naming.
+  const patch = {
+    id: 'demo',
+    assets: [{ from: 'cometix-asr', to: 'vendor/cometix-asr', perPlatform: true }],
+  };
+  const installed = await installAssets(dir, patch);
+
+  const natives = installed.filter((f) => f.path.endsWith('.node'));
+  assert.equal(natives.length, 1, 'exactly one native binary for this platform');
+  assert.ok(natives[0].path.includes(`${process.platform}-${process.arch}`));
+  // The JS half comes along whatever the platform.
+  assert.ok(installed.some((f) => f.path.endsWith('index.js')));
+
+  await saveOriginals(dir, new Map(), ['demo']);
+  await recordApplied(dir, [{ id: 'demo', files: [], sites: [] }]);
+  await recordAssets(dir, 'demo', installed);
+
+  const { removedAssets } = await restoreOriginals(dir);
+  assert.equal(removedAssets.length, installed.length);
+  await assert.rejects(stat(join(dir, 'vendor/cometix-asr')), 'asset directory is gone');
+  // vendor/ itself still holds ripgrep, so it must survive.
+  assert.ok((await stat(join(dir, 'vendor/ripgrep/rg'))).isFile());
 });
 
 test('scan: a required site that is absent fails the whole patch', async () => {
