@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { detectLayout, readInstalledVersion, describeLayout } from '../core/layout.mjs';
 import { loadPatches, appliesTo } from '../core/registry.mjs';
 import { createScanContext, scanPatch } from '../core/scan.mjs';
+import { probe } from '../core/probe.mjs';
 import {
   compilePatch, mergeByFile, writeFiles, verifyPatch,
   resolveApplied, recordApplied, saveOriginals, listOriginals, restoreOriginals,
@@ -48,7 +49,7 @@ function findCli(explicit) {
 }
 
 function parseArgs(argv) {
-  const flags = { command: 'list', ids: [], path: null, json: false, dryRun: false, all: false };
+  const flags = { command: 'list', ids: [], path: null, json: false, dryRun: false, all: false, limit: 20 };
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -56,10 +57,11 @@ function parseArgs(argv) {
     else if (a === '--json') flags.json = true;
     else if (a === '--dry-run') flags.dryRun = true;
     else if (a === '--all') flags.all = true;
+    else if (a === '--limit' && argv[i + 1]) flags.limit = Number(argv[++i]);
     else if (a === '--help' || a === '-h') flags.command = 'help';
     else rest.push(a);
   }
-  if (rest.length > 0 && ['list', 'check', 'apply', 'restore', 'status'].includes(rest[0])) {
+  if (rest.length > 0 && ['list', 'check', 'apply', 'restore', 'status', 'probe'].includes(rest[0])) {
     flags.command = rest.shift();
   }
   flags.ids = rest;
@@ -75,9 +77,12 @@ ${C.bold}claude-code patcher${C.reset}
   patcher apply <id...> [--all]   apply patches
   patcher status                  what is applied, site by site
   patcher restore                 put every touched file back to pristine
+  patcher probe <site>            list every node a match hits (authoring aid)
+                                  <site> is JSON or a .json file: {marker, match, capture}
 
   --path <cli.js>   target a specific install
   --dry-run         compute and verify the rewrite, write nothing
+  --limit <n>       probe: hits to print (default 20)
 
 Each rewrite leaves a /*@cc:<patch>#<site>*/ marker beside it, so what is
 applied can be read off the files. Originals are copied aside the first time
@@ -118,6 +123,24 @@ async function main() {
   }
 
   const { cli, layout, version } = await resolveTarget(flags);
+
+  if (flags.command === 'probe') {
+    const arg = flags.ids.join(' ').trim();
+    if (!arg) { err('probe needs a site: JSON text or a path to a .json file'); process.exit(1); }
+    const site = JSON.parse(arg.startsWith('{') ? arg : await readFile(arg, 'utf8'));
+    const r = await probe(layout, site, { limit: flags.limit });
+    console.log(`\n${C.bold}Claude Code ${version ?? 'unknown'}${C.reset}  ${C.dim}·  ${describeLayout(layout)}${C.reset}\n`);
+    info(`${r.filesParsed} of ${r.filesScanned} file(s) passed the marker and were parsed`);
+    for (const h of r.hits) {
+      console.log(`\n  ${C.green}${h.file}${C.reset}  ${h.type}${h.name ? ` ${h.name}` : ''}  @${h.start}  ${h.bytes}B`);
+      if (Object.keys(h.captures).length) console.log(`    ${C.blue}capture${C.reset} ${JSON.stringify(h.captures)}`);
+      console.log(`    ${C.dim}${h.excerpt}${C.reset}`);
+    }
+    const tail = r.total > r.hits.length ? ` (showing ${r.hits.length}; --limit for more)` : '';
+    (r.total === 1 ? ok : r.total === 0 ? err : warn)(`${r.total} hit(s)${tail}${r.total > 1 ? ' — a site takes the first unless nth says otherwise' : ''}`);
+    console.log();
+    return;
+  }
 
   if (flags.command === 'restore') {
     const held = await listOriginals(layout.root);
