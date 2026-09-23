@@ -1,0 +1,119 @@
+{
+  "id": "transcript-dialog-replay",
+  "title": "Stop losing permission dialogs raised while the transcript is open",
+  "description": "Dialogs are delivered through a transient channel with no replay. The main prompt screen subscribes to it; the Ctrl+O transcript screen does not. A permission request raised while the transcript is open therefore finds no subscriber and is cancelled outright — the tool stays at \"Waiting…\" even after returning. This keeps pending requests and replays them to the next screen that subscribes.",
+  "risk": "high",
+
+  "stages": [
+    {
+      "id": "anchor",
+      "sites": [
+        {
+          "id": "factory",
+          "description": "The dialog channel factory: a zero-argument function returning an object with subscribe/reply/request that mints `dialog-<n>` ids. A second Map is declared alongside the existing pending map to hold the events themselves — the existing one stores resolvers, which cannot be replayed.\n\nThe pending map is read out of the first declaration by position, but the position is also asserted in `where`: if upstream reorders those bindings the site stops matching rather than capturing the wrong name, which is the failure mode worth having.",
+          "marker": "dialog-",
+          "match": {
+            "node": "FunctionDeclaration",
+            "where": {
+              "params.length": 0,
+              "body.body.0.declarations.3.init.type": "NewExpression",
+              "body.body.0.declarations.3.init.callee.name": "Map"
+            },
+            "contains": "/subscribe\\(\\w+\\)\\{\\w+\\+=1/",
+            "has": [
+              { "node": "Property", "where": { "key.name": "reply" } },
+              { "node": "Property", "where": { "key.name": "request" } }
+            ]
+          },
+          "capture": {
+            "pending": "body.body.0.declarations.3.id.name",
+            "factoryName": "id.name"
+          },
+          "edit": { "op": "prepend-body", "text": "let __ccppEv=new Map;" },
+          "expect": "required"
+        }
+      ]
+    },
+    {
+      "id": "rewire",
+      "sites": [
+        {
+          "id": "no-cancel-without-subscriber",
+          "description": "`if(<signal>?.aborted || <subscriberCount>===0)` cancels the request when nothing is listening. An aborted signal is a real cancellation and stays; having no subscriber right now is not, and is what this patch exists to stop. The test is narrowed to its left operand — captured as source, since it is an expression rather than a name.",
+          "sameFileAs": "factory",
+          "marker": "dialog-",
+          "match": {
+            "node": "IfStatement",
+            "where": {
+              "test.type": "LogicalExpression",
+              "test.operator": "||",
+              "test.left.type": "ChainExpression",
+              "test.right.type": "BinaryExpression",
+              "test.right.operator": "===",
+              "test.right.right.value": 0
+            },
+            "contains": "cancelled:!0"
+          },
+          "capture": { "abortTest": "$src:test.left" },
+          "edit": { "op": "replace-field", "field": "test", "text": "{{abortTest}}" },
+          "expect": "required"
+        },
+        {
+          "id": "remember-event",
+          "description": "The emit that publishes the request. Its argument is stored on the way past — `map.set(k,v)` returns the map, so `.get(k)` hands the same object straight on to emit without changing what is emitted.",
+          "sameFileAs": "factory",
+          "marker": "dialog-",
+          "match": {
+            "node": "CallExpression",
+            "where": { "callee.property.name": "emit", "arguments.length": 1, "arguments.0.type": "ObjectExpression" },
+            "contains": "onFirstReveal"
+          },
+          "capture": { "event": "$src:arguments.0", "id": "arguments.0.properties.0.value.name" },
+          "edit": { "op": "replace-field", "field": "arguments.0", "text": "__ccppEv.set({{id}},{{event}}).get({{id}})" },
+          "expect": "required"
+        },
+        {
+          "id": "replay-on-subscribe",
+          "description": "Replay whatever is still pending to a newly-arrived listener. Guarded on the original map so anything already replied to or aborted is skipped, and deferred through queueMicrotask so the subscriber finishes wiring itself up first — the same ordering the channel already relies on for its cancellation path.",
+          "sameFileAs": "factory",
+          "marker": "dialog-",
+          "match": {
+            "node": "Property",
+            "where": { "key.name": "subscribe", "value.type": "FunctionExpression", "value.params.length": 1 },
+            "contains": "/\\+=1/"
+          },
+          "capture": { "listener": "value.params.0.name" },
+          "edit": {
+            "op": "prepend-body",
+            "field": "value",
+            "text": "for(let __e of __ccppEv.values())if({{pending}}.has(__e.id))queueMicrotask(()=>{{listener}}(__e));"
+          },
+          "expect": "required"
+        },
+        {
+          "id": "forget-on-reply",
+          "description": "Drop the remembered event once answered, so a later subscriber is not shown a dialog that has already been dealt with.",
+          "sameFileAs": "factory",
+          "marker": "dialog-",
+          "match": {
+            "node": "Property",
+            "where": { "key.name": "reply", "value.type": "FunctionExpression", "value.params.length": 1 },
+            "contains": "/\\.delete\\(/"
+          },
+          "capture": { "replyArg": "value.params.0.name" },
+          "edit": { "op": "prepend-body", "field": "value", "text": "__ccppEv.delete({{replyArg}}.id);" },
+          "expect": "required"
+        }
+      ]
+    }
+  ],
+
+  "verify": [
+    { "match": { "node": "VariableDeclarator", "where": { "id.name": "__ccppEv" } },
+      "describe": "pending-event store declared" },
+    { "match": { "node": "CallExpression", "where": { "callee.object.name": "__ccppEv", "callee.property.name": "set" } },
+      "describe": "requests are remembered" },
+    { "match": { "node": "ForOfStatement", "contains": "__ccppEv" },
+      "describe": "subscribers replay what is pending" }
+  ]
+}

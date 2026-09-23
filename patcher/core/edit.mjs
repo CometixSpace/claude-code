@@ -26,10 +26,16 @@ export function interpolate(text, values) {
   });
 }
 
-function functionBody(node) {
-  const body = node.body;
+// The block body of a function, optionally reached through a field first.
+//
+// `field` exists because the interesting function is often not the matched
+// node: a method is a Property whose value holds the body, and matching the
+// Property is what makes it addressable by name.
+function functionBody(node, field) {
+  const target = field ? subNode(node, field) : node;
+  const body = target.body;
   if (!body || body.type !== 'BlockStatement') {
-    throw new Error(`${node.type} has no block body to rewrite`);
+    throw new Error(`${target.type} has no block body to rewrite`);
   }
   return body;
 }
@@ -60,20 +66,20 @@ export function compileEdit(edit, node, values) {
       return { start: node.start, end: node.end, text };
 
     case 'replace-body': {
-      const body = functionBody(node);
+      const body = functionBody(node, edit.field);
       return { start: body.start, end: body.end, text };
     }
 
     // Inside the braces, so the guard runs before anything else in the body.
     case 'prepend-body': {
-      const body = functionBody(node);
+      const body = functionBody(node, edit.field);
       return { start: body.start + 1, end: body.start + 1, text };
     }
 
     // body.end is the offset *after* '}', so end - 1 lands on the brace and
     // the text goes in as the body's last statement.
     case 'append-body': {
-      const body = functionBody(node);
+      const body = functionBody(node, edit.field);
       return { start: body.end - 1, end: body.end - 1, text };
     }
 
