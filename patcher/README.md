@@ -78,6 +78,37 @@ That makes taking a backup idempotent — re-running `apply` cannot damage it �
 and `restore` always returns the install to pristine. Keeping one patch out of
 several means re-applying it, which is cheap and cannot get the layering wrong.
 
+## Assets
+
+A patch can install files, not only rewrite them — `voice-asr-backend` is
+inert without the addon it feeds audio to.
+
+```jsonc
+"assets": [{
+  "to": "vendor/cometix-asr",
+  "perPlatform": true,
+  "fetch": {
+    "repo": "Haleclipse/libcometix-asr",
+    "artifact": "claude-code-enable-voice-mode-{platform}",
+    "commit": "0930548"
+  }
+}]
+```
+
+Only the binary for the running platform is installed — 13MB of addon becomes
+a 3.4MB install, and the other three could not load here anyway. Nor are they
+stored: the build already publishes one bundle per platform, so the tool takes
+the one it needs and caches it under `assets/.cache`. Keeping all four in the
+repository would add ~13MB of binary to the history of every addon update.
+
+`commit` pins the build, so the binary and the adapter driving it stay in
+step. Each bundle is checked against the sha256 published beside it.
+
+Installed files are tracked apart from originals: restore deletes them rather
+than writing bytes back, and only when still the size it wrote — a file
+replaced since is left alone. Emptied directories go via `rmdir`, which
+refuses a non-empty one, so `vendor/` survives on account of ripgrep.
+
 ## Patch shape
 
 ```jsonc

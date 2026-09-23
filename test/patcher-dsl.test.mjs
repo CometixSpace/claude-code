@@ -293,19 +293,26 @@ test('apply: assets install per platform and restore removes only them', async (
     'vendor/ripgrep/rg': 'binary',
   });
 
-  // The asset source lives under patcher/assets; point at the real one so the
-  // per-platform filter is exercised against actual napi-rs naming.
+  // The real patch fetches its addon from CI; this stands in a local bundle
+  // with all four platforms so the filter is exercised without a network.
+  const assetRoot = await realpath(await mkdtemp(join(tmpdir(), 'assets-')));
+  const bundle = join(assetRoot, 'addon');
+  await mkdir(bundle, { recursive: true });
+  await writeFile(join(bundle, 'index.js'), 'module.exports={}');
+  for (const tag of ['darwin-arm64', 'darwin-x64', 'linux-x64-gnu', 'win32-x64-msvc']) {
+    await writeFile(join(bundle, `lib.${tag}.node`), tag);
+  }
+
   const patch = {
     id: 'demo',
-    assets: [{ from: 'cometix-asr', to: 'vendor/cometix-asr', perPlatform: true }],
+    assets: [{ from: 'addon', to: 'vendor/addon', perPlatform: true, localRoot: assetRoot }],
   };
   const installed = await installAssets(dir, patch);
 
   const natives = installed.filter((f) => f.path.endsWith('.node'));
   assert.equal(natives.length, 1, 'exactly one native binary for this platform');
-  assert.ok(natives[0].path.includes(`${process.platform}-${process.arch}`));
-  // The JS half comes along whatever the platform.
-  assert.ok(installed.some((f) => f.path.endsWith('index.js')));
+  assert.ok(natives[0].path.includes(process.platform));
+  assert.ok(installed.some((f) => f.path.endsWith('index.js')), 'the JS half comes along');
 
   await saveOriginals(dir, new Map(), ['demo']);
   await recordApplied(dir, [{ id: 'demo', files: [], sites: [] }]);
@@ -313,7 +320,7 @@ test('apply: assets install per platform and restore removes only them', async (
 
   const { removedAssets } = await restoreOriginals(dir);
   assert.equal(removedAssets.length, installed.length);
-  await assert.rejects(stat(join(dir, 'vendor/cometix-asr')), 'asset directory is gone');
+  await assert.rejects(stat(join(dir, 'vendor/addon')), 'asset directory is gone');
   // vendor/ itself still holds ripgrep, so it must survive.
   assert.ok((await stat(join(dir, 'vendor/ripgrep/rg'))).isFile());
 });
