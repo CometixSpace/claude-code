@@ -137,6 +137,15 @@ test('tui: quitting leaves a one-line summary', async () => {
   const ui = render(React.createElement(App, { install: i }));
   await until(ui, (f) => f.includes('no changes'), 'first frame');
   await press(ui, 'q');
-  const frame = await until(ui, (f) => f.includes('no patches applied'), 'the summary');
+  // Searched across frames, not only the last: under CI, Ink's unmount
+  // writes one more frame of its own — empty in debug mode, which is how the
+  // testing library renders — after the app's final one.
+  const end = Date.now() + 5000;
+  let frame;
+  while (!frame && Date.now() < end) {
+    frame = ui.frames.map(plain).find((f) => f.includes('no patches applied'));
+    if (!frame) await pause(20);
+  }
+  assert.ok(frame, 'a frame with the summary was drawn');
   assert.doesNotMatch(frame, /space toggle/, 'the list is gone');
 });
