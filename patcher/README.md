@@ -12,6 +12,7 @@ node patcher/bin/patch.mjs check  <id...>        # locate sites, write nothing
 node patcher/bin/patch.mjs apply  <id...>        # or: apply --all
 node patcher/bin/patch.mjs status                # what is applied, site by site
 node patcher/bin/patch.mjs restore               # everything back to what npm installed
+node patcher/bin/patch.mjs probe  <site json>     # authoring: list every node a match hits
 ```
 
 The global install is found automatically; `--path /path/to/cli.js` targets
@@ -300,75 +301,6 @@ than writing bytes back, and only when still the size it wrote — a file
 replaced since is left alone. Emptied directories go via `rmdir`, which
 refuses a non-empty one, so `vendor/` survives on account of ripgrep.
 
-## Patch shape
-
-```jsonc
-{
-  "id": "cleanup-period",
-  "title": "…",           // shown in the picker
-  "risk": "low",          // low | medium | high
-  "versions": ">=2.1.242", // optional semver range
-
-  "stages": [              // run in order; later stages see earlier captures
-    {
-      "id": "find-const",
-      "when": { "captured": ["x"] },   // optional guard
-      "sites": [
-        {
-          "id": "usage-site",
-          "marker": "cleanupPeriodDays",  // cheap gate; required unless unfiltered
-          "match": { "node": "…", "where": {}, "contains": "…", "nth": 0 },
-          "capture": { "constName": "right.name" },
-          "edit": { "op": "replace", "text": "…" },
-          "expect": "required",            // or "optional"
-          "sameFileAs": "another-site",    // scope to the file that site matched in
-          "within": "another-site",        // scope to the node that site matched
-          "in": "entry"                    // only look at cli.js
-        }
-      ]
-    }
-  ],
-
-  "verify": [{ "match": { "node": "…", "where": {} }, "describe": "…" }]
-}
-```
-
-### match
-
-| Field | Meaning |
-|---|---|
-| `node` | AST node type |
-| `where` | dotted path → expected value. `[]` steps into an array (`arguments.[].value`). A value can be `{eq,ne,gt,gte,lt,lte,in,matches,exists}`. |
-| `contains` / `excludes` | tested against the node's own source text; `"/…/flags"` is a regex, anything else a literal substring |
-| `has` / `hasNot` | a shape somewhere inside this node, resolved against **this node's** captures |
-| `nth` | `0` (default), a number, `"last"`, or `"all"` |
-
-`has` is what tells apart two functions that look alike from the outside.
-`disable-collapse-read-search` has several functions building a
-`{type:"collapsed_read_search"}` object; only the accumulator reads
-`<param>.messages[0]` — and `<param>` is that function's own parameter, whose
-minified name is known only once the function is matched. So `capture` runs
-first and `has` is resolved against it.
-
-### Match on meaning, not on surface
-
-The first port of `disable-collapse-read-search` pinned an arity —
-`params.length: 1`, `arguments.length: 1` — as the standalone script did. By
-2.1.280 the creator is `N1r(e,n)` and the call is `w.push(N1r(M,h))`, so both
-found nothing. Reading the first parameter's `messages` array is what the
-function *is*; how many arguments it happens to take is not. Prefer `{gte: 1}`
-and a `has` over an exact count.
-
-### edit
-
-`replace` · `replace-body` · `prepend-body` · `append-body` · `replace-value` ·
-`replace-field` (needs `field`) · `insert-before` · `insert-after`
-
-Text may be inline (`text`) or read from `payloads/` (`textFrom`). Injected
-text is bimodal — twelve of the fourteen scripts inject ≤128 characters, but
-`enable-voice-mode` injects 14,453 — so large payloads stay out of the JSON
-where they can be read and diffed.
-
 ## Everything is a predicate, including verification
 
 Locating, rewriting and checking all go through the AST. `verify` states the
@@ -397,20 +329,9 @@ the variable names it touched, then generates re-assignments from those names
 when nothing was captured. `stages` plus `when` model that; a flat `sites[]`
 cannot.
 
-## sameFileAs is a correctness requirement
+## Writing a patch
 
-Each chunk is its own module scope, so a minified name is only unique within
-one file. `cleanup-period` captures `K` from `…cleanupPeriodDays ?? K` in
-`chunk-q6mcb18z.js` — and an unconstrained search for `K = <number>` also
-finds an unrelated `K` in `chunk-rrpdrd2h.js`. Editing that one would corrupt
-a module the patch has nothing to do with. Any site searching by a captured
-identifier needs `sameFileAs`.
-
-## Reporting
-
-A site whose marker is present but whose predicate matched **nothing at all**
-is reported as possible drift. The distinction matters: with one bundle a
-`found: false` was visible, but across 2000 files "no match" and "this file
-never had it" look identical. Note the marker is a coarse filter — several
-files mentioning the word while one holds the real shape is normal, so this
-only fires when the site ends with zero hits everywhere.
+[`DSL.md`](DSL.md) is the guide: every field, a worked example of every
+operation, the probe → check → apply workflow, and the mistakes the patches
+here have each made once. Start from
+[`templates/patch.template.json`](templates/patch.template.json).

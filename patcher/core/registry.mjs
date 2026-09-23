@@ -40,7 +40,7 @@ async function resolvePayloads(patch) {
 
 // Structural checks that would otherwise surface as a crash mid-apply, or —
 // worse — as a patch that silently does nothing.
-function validate(patch, file) {
+export function validate(patch, file) {
   const fail = (msg) => { throw new Error(`${file}: ${msg}`); };
   if (!patch.id) fail('missing id');
   if (!patch.title) fail('missing title');

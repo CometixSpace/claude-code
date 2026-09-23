@@ -307,11 +307,6 @@ export async function writeFiles(root, merged, { dryRun = false } = {}) {
 
 // Post-write checks a patch declares for itself, beyond "it still parses".
 //
-// `verify.contains` re-reads the file and asserts the text is there — the
-// cheap version of what the scripts do when they re-parse and walk back to
-// the node they patched.
-// Post-write checks a patch declares for itself, beyond "it still parses".
-//
 // Stated as an AST predicate, the same shape `match` uses, and run against a
 // fresh parse of what was written. Text matching was the wrong tool here even
 // though `match.contains` uses it legitimately: there the text is a node's
@@ -339,10 +334,6 @@ export async function verifyPatch(root, patch, merged, values) {
   }
   return problems;
 }
-
-// ──────────────────────────────────────────────
-//  Manifest-based backup
-// ──────────────────────────────────────────────
 
 // ──────────────────────────────────────────────
 //  Backups: one pristine copy per file, taken once

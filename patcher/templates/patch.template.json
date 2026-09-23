@@ -1,0 +1,64 @@
+{
+  "id": "my-fix",
+  "title": "One line: what changes for the user",
+  "description": "THE BUG: what the user sees. ROOT CAUSE: which code does it, and why. FIX: what this patch changes, and what it deliberately leaves alone.",
+  "risk": "low",
+  "versions": ">=2.1.242",
+  "stages": [
+    {
+      "id": "locate",
+      "sites": [
+        {
+          "id": "anchor",
+          "description": "FIX POINT 1: the node that identifies the place. Say why this predicate hits exactly one node (probe it), and which minified names it captures for the sites after it.",
+          "marker": "STABLE_TEXT_NEAR_THE_CODE",
+          "match": {
+            "node": "FunctionDeclaration",
+            "contains": "STABLE_TEXT_NEAR_THE_CODE"
+          },
+          "capture": {
+            "fn": "id.name"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rewrite",
+      "sites": [
+        {
+          "id": "change",
+          "description": "FIX POINT 2: the smallest node whose rewrite fixes it, searched only inside the anchor.",
+          "within": "anchor",
+          "marker": "STABLE_TEXT_NEAR_THE_CODE",
+          "match": {
+            "node": "ReturnStatement"
+          },
+          "edit": {
+            "op": "replace-field",
+            "field": "argument",
+            "text": "!0"
+          },
+          "expect": "required"
+        }
+      ]
+    }
+  ],
+  "verify": [
+    {
+      "match": {
+        "node": "FunctionDeclaration",
+        "where": {
+          "id.name": "{{fn}}"
+        },
+        "has": {
+          "node": "ReturnStatement",
+          "where": {
+            "argument.operator": "!",
+            "argument.argument.value": 0
+          }
+        }
+      },
+      "describe": "the anchor now returns true"
+    }
+  ]
+}
