@@ -23,7 +23,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 //  Node runs that layout as-is once the paths point at real files — the
 //  chunks rely on ESM semantics, not on Bun-specific module behaviour.
 //  What it cannot do is resolve /$bunfs/root/, call import.meta.require,
-//  or find a global Bun, which is what E1–E4 below supply.
+//  read import.meta.dir, or find a global Bun, which is what E1–E8 below
+//  supply.
 //
 //  The P1–P10 compatibility patches are unchanged by the layout switch and
 //  keep running through astPatch() in module mode.
@@ -378,6 +379,90 @@ export function rewriteNodeFetch(code, prefix) {
   return { code: out, rewritten: sites.length };
 }
 
+// ──────────────────────────────────────────────
+//  E8: Bun's import.meta properties → Node's
+//
+//  Bun gives every module import.meta.dir and import.meta.path; Node names
+//  the same two values import.meta.dirname and import.meta.filename. Under
+//  Node the Bun names are simply undefined — nothing fails where they are
+//  read, only wherever the value is next used as a path.
+//
+//  Five built-in plugins have built their hooks module with
+//  R4(import.meta.dir, …) since the split layout arrived. Through 2.1.280
+//  nothing joined that folder at startup, so the undefined went unnoticed;
+//  2.1.281's plugin loader does, and every interactive start ended at the
+//  mount watchdog:
+//
+//    Claude Code could not start: The "path" argument must be of type
+//    string. Received undefined
+//
+//  Matched on the AST, as E7 is: chunks carry bundled documentation, and a
+//  string mentioning import.meta.dir is not a property access.
+// ──────────────────────────────────────────────
+
+const BUN_IMPORT_META = { dir: 'dirname', path: 'filename' };
+
+// What Node itself defines on import.meta. Anything else still read off it
+// after E8 is Bun-only, and undefined here.
+const NODE_IMPORT_META = new Set(['url', 'dirname', 'filename', 'resolve']);
+
+// Every non-computed `import.meta.<name>` read in a module, or null when the
+// module does not parse.
+function importMetaReads(code) {
+  let ast;
+  try {
+    ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' });
+  } catch {
+    return null;
+  }
+  const reads = [];
+  (function visit(node) {
+    if (node.type === 'MemberExpression' && !node.computed
+        && node.object.type === 'MetaProperty'
+        && node.object.meta.name === 'import' && node.object.property.name === 'meta') {
+      reads.push(node.property);
+    }
+    for (const key of Object.keys(node)) {
+      const child = node[key];
+      if (Array.isArray(child)) {
+        for (const item of child) if (item && typeof item.type === 'string') visit(item);
+      } else if (child && typeof child.type === 'string') {
+        visit(child);
+      }
+    }
+  })(ast);
+  return reads;
+}
+
+export function rewriteImportMeta(code) {
+  if (!/import\.meta\.(?:dir|path)\b/.test(code)) return { code, rewritten: 0 };
+  const sites = (importMetaReads(code) ?? []).filter((p) => Object.hasOwn(BUN_IMPORT_META, p.name));
+  let out = code;
+  for (const p of sites.sort((a, b) => b.start - a.start)) {
+    out = out.slice(0, p.start) + BUN_IMPORT_META[p.name] + out.slice(p.end);
+  }
+  return { code: out, rewritten: sites.length };
+}
+
+// The Bun-only import.meta properties a module still reads. E8 maps the two
+// with a Node equivalent; the rest — import.meta.main, .env, .file — have
+// none, and a new one appearing upstream has to fail the build rather than
+// ship a session that dies on start.
+const BUN_META_TEXT = /import\.meta\.(?!(?:url|dirname|filename|resolve)\b)([A-Za-z_$][\w$]*)/g;
+
+export function bunOnlyImportMeta(code) {
+  // matchAll works on a copy of the regex, so the shared one keeps no
+  // lastIndex between calls — a .test() first would, and the copy would
+  // then start searching after the only match.
+  const mentioned = [...code.matchAll(BUN_META_TEXT)].map((m) => m[1]);
+  if (mentioned.length === 0) return [];
+  const reads = importMetaReads(code);
+  // A module that does not parse gets the textual answer: over-reporting
+  // stops a build that is broken anyway, under-reporting would not.
+  const names = reads ? reads.map((p) => p.name) : mentioned;
+  return [...new Set(names.filter((n) => !NODE_IMPORT_META.has(n)))];
+}
+
 function firstStatementStart(code) {
   const ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' });
   return ast.body.length > 0 ? ast.body[0].start : code.length;
@@ -459,9 +544,10 @@ export async function patchSplitEsm({ extractDir, entryRel = 'cli.js' }) {
   const files = await listJsFiles(extractDir);
   const stats = {
     files: files.length, specifiers: 0, literals: 0,
-    metaRequire: 0, rebrand: 0, hoisted: 0, hooksWorkers: 0, nodeFetch: 0, ast: {},
+    metaRequire: 0, rebrand: 0, hoisted: 0, hooksWorkers: 0, nodeFetch: 0, importMeta: 0, ast: {},
   };
   let leftover = 0;
+  const bunOnly = [];
 
   // Locate every patch site before touching anything, so a required one that
   // moved or disappeared surfaces as a report line instead of a zero counter.
@@ -497,6 +583,10 @@ export async function patchSplitEsm({ extractDir, entryRel = 'cli.js' }) {
     code = meta.code;
     if (meta.patched) stats.metaRequire++;
 
+    const metaProps = rewriteImportMeta(code);
+    code = metaProps.code;
+    stats.importMeta += metaProps.rewritten;
+
     if (mayContainPatchSite(code)) {
       const result = astPatch(code, 'module');
       if (result.replacementCount > 0) {
@@ -524,6 +614,15 @@ export async function patchSplitEsm({ extractDir, entryRel = 'cli.js' }) {
 
     if (code !== before) await writeFile(path, code);
     leftover += (code.match(new RegExp(ROOT_ALT, 'g')) || []).length;
+    for (const name of bunOnlyImportMeta(code)) bunOnly.push(`${rel}: import.meta.${name}`);
+  }
+
+  // Checked on what is about to ship, after every rewrite. An import.meta
+  // property Node does not define reads as undefined without complaint, so
+  // nothing downstream catches it — 2.1.281 shipped five such reads and
+  // failed only when a user started a session.
+  if (bunOnly.length > 0) {
+    throw new Error(`Bun-only import.meta properties remain after patching:\n  ${bunOnly.join('\n  ')}`);
   }
 
   // Bun.Image is sharp's API under another name, so bundle sharp's JS half
