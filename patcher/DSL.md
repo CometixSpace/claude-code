@@ -612,6 +612,13 @@ until the count is 1.
 **Minified names are per chunk.** Any site that searches by a captured name
 needs `sameFileAs`, or `within` if the name is a local.
 
+**A constant can move to another chunk.** `sameFileAs` only works while the
+declaration sits beside its reader. `cleanup-period` edited `var K=30` next to
+`cleanupPeriodDays??K` on 2.1.280; on 2.1.282 the bundler moved it to
+another chunk (`var Ann=30`, exported, then imported by the reader) and the
+declaration site found nothing. When a value is read in one place, rewrite
+the read (`replace-field` on `right`), not the declaration.
+
 **A placeholder typo looks like drift.** `{{contName}}` in a `match` does not
 fail; it searches for the literal text and finds nothing.
 
