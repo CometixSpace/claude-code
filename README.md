@@ -57,6 +57,7 @@ Applied by `scripts/node-compat-patch.mjs` — to the single `cli.js` on CJS bui
 | P8 | `AF_()` shadow function patched — the official binary impersonates `bfs`/`ugrep` through ARGV0 multicall, which under Node resolves from PATH via `which` instead |
 | P9 | Package name rebranded so the built-in updater installs this package rather than the official Bun build |
 | P10 | Virtual-filesystem path constants for the artifact runtimes and, since 2.1.229, the design-canvas template |
+| P11 | Built-in plugin hooks modules load from the embedded scan. The source picks `isStandalone() ? embedded(module, scan(), folder) : {module, folder}`; with `Bun.isStandaloneExecutable` false (which the self re-exec, ripgrep-as-argv0 and install-method paths rely on) every built-in took the source-tree form, which reads a `hooks/register.ts` no package ships — and would need `Bun.Transpiler` to compile it. The conditional is reduced to its embedded branch. Since 2.1.282 ([#15](https://github.com/CometixSpace/claude-code/issues/15)) |
 
 Patch sites are declared in `scripts/patch-sites.mjs` and located by walking the AST with the same predicates the rewrite uses, across worker threads. With one `cli.js` a dead pattern showed up as a zero counter; across ~1800 minified modules it is indistinguishable from a file that never had it, so a required site that disappears fails the build. A marker that survives while every predicate stops matching is reported too — that is how the Windows path form was caught.
 

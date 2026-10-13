@@ -112,6 +112,17 @@ export const PATCH_SITES = [
     // Only present since v2.1.229.
     expect: 'optional',
   },
+  {
+    id: 'P11-hooks-module',
+    matcher: 'p11',
+    description: 'Built-in plugin hooks module taking the source-tree form over the embedded scan',
+    // Part of the construct itself — the fallback object literal — so it
+    // cannot drift into another chunk than the site, as a constant can.
+    // Present from at least v2.1.280; unpatched since 2.1.282, every built-in
+    // plugin with a hooks module failed to load.
+    marker: '{module:',
+    expect: 'required',
+  },
 ];
 
 // P9 is a plain string replace with no AST shape, so it is tracked separately

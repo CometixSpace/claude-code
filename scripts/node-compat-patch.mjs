@@ -215,6 +215,28 @@ export const MATCHERS = {
     const body = code.slice(node.start, node.end);
     return body.includes('ARGV0') && body.includes('_cc_bin') && body.includes('command');
   },
+
+  // isStandalone() ? embedded(module, scan(), folder) : {module, folder} — the
+  // source a built-in plugin's hooks module is loaded from. Matched on what
+  // each branch carries rather than on names or arity: the fallback is an
+  // object of exactly {module, folder}, and the embedded call is handed those
+  // same two identifiers plus the zero-argument scan thunk.
+  p11: (node) => {
+    if (node.type !== 'ConditionalExpression') return false;
+    const { test, consequent: embedded, alternate: fallback } = node;
+    if (test?.type !== 'CallExpression' || test.arguments.length !== 0) return false;
+    if (embedded?.type !== 'CallExpression' || fallback?.type !== 'ObjectExpression') return false;
+    if (fallback.properties.length !== 2) return false;
+    const valueOf = (key) => fallback.properties.find((p) =>
+      p.type === 'Property' && !p.computed && (p.key.name ?? p.key.value) === key)?.value;
+    const mod = valueOf('module');
+    const folder = valueOf('folder');
+    if (mod?.type !== 'Identifier' || folder?.type !== 'Identifier') return false;
+    const args = embedded.arguments;
+    return args.some((a) => a.type === 'Identifier' && a.name === mod.name) &&
+      args.some((a) => a.type === 'Identifier' && a.name === folder.name) &&
+      args.some((a) => a.type === 'CallExpression' && a.arguments.length === 0);
+  },
 };
 
 // Walk once and report which patches have at least one match. Used by the
@@ -235,7 +257,7 @@ export function astPatch(code, sourceType = 'script') {
   const ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType });
   const { REQ, DIR } = esmNames(sourceType);
   const replacements = [];
-  const stats = { p1Paths: 0, p1Requires: 0, p1Dirnames: 0, p2: false, p3: 0, p5: false, p7: false, p8: false, p9: 0, p10: 0 };
+  const stats = { p1Paths: 0, p1Requires: 0, p1Dirnames: 0, p2: false, p3: 0, p5: false, p7: false, p8: false, p9: 0, p10: 0, p11: 0 };
 
   walk(ast, (node) => {
     // P1: fileURLToPath("file:///home/runner/...") → __filename
@@ -394,6 +416,34 @@ export function astPatch(code, sourceType = 'script') {
       }
     }
 
+    // P11: Load built-in plugin hooks modules from the embedded scan
+    //
+    // A built-in plugin hands its hooks module over as
+    //   isStandalone() ? embedded(module, scan(), folder) : {module, folder}
+    // where isStandalone() reads Bun.isStandaloneExecutable. The embedded form
+    // carries the bundled module and its precomputed scan, and the loader
+    // names it by a virtual builtin:<plugin>/hooks/register.ts path. The other
+    // form is for running from a source checkout: the loader joins
+    // folder + "hooks/register.ts" and reads it from disk.
+    //
+    // Under Node the polyfill keeps isStandaloneExecutable false — some twenty
+    // other call sites (self re-exec dropping argv[1], ripgrep as argv0 of the
+    // binary, install-method detection) rely on it — so every built-in plugin
+    // takes the source-tree form, and the file it looks for exists in no
+    // package: "hooks module did not load: …/hooks/register.ts".
+    //
+    // The scan thunk is passed at every call site, so the embedded form is
+    // complete here too. Replace the conditional with that branch alone.
+    if (MATCHERS.p11(node)) {
+      replacements.push({
+        start: node.start,
+        end: node.end,
+        replacement: code.slice(node.consequent.start, node.consequent.end),
+      });
+      stats.p11++;
+      return;
+    }
+
     // P7: Expose bundled HttpsProxyAgent as globalThis.__HttpsProxyAgent
     //
     // Bun's ws supports {proxy: url} natively; Node's ws does not.
@@ -465,6 +515,7 @@ export async function patchFile(inputPath, outputPath) {
   console.log(`[${s.p8 ? 'OK' : '! '}] P8: AF_ shadow function ${s.p8 ? 'patched to prefer system bfs/ugrep' : 'not found'}`);
   console.log(`[${s.p9 > 0 ? 'OK' : '! '}] P9: Package name ${s.p9 > 0 ? `rebranded (${s.p9} occurrences)` : 'no @anthropic-ai references found'}`);
   console.log(`[${s.p10 > 0 ? 'OK' : '--'}] P10: Patched ${s.p10} BunFS asset path${s.p10 === 1 ? '' : 's'} (chart/hljs/mermaid/payload)`);
+  console.log(`[${s.p11 > 0 ? 'OK' : '--'}] P11: ${s.p11 > 0 ? 'built-in plugin hooks modules load from the embedded scan' : 'no built-in hooks module source found'}`);
 
   // AST validation
   try {
