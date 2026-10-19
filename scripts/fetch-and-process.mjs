@@ -72,6 +72,39 @@ async function downloadFile(url, destPath) {
 }
 
 // ──────────────────────────────────────────────
+//  SEA binaries from npm (--source npm)
+//
+//  The same binaries ship as @anthropic-ai/claude-code-<platform>, one per
+//  package at package/<binary>. The registry is reachable where the CDN is
+//  not, so a local build can take them from there instead. There is no
+//  manifest on npm; the two fields the pipeline reads are derived.
+// ──────────────────────────────────────────────
+
+const npmBinaryName = (platform) => (platform.startsWith('win32') ? 'claude.exe' : 'claude');
+
+function npmManifest(version) {
+  // Read the whole map: `npm view … time.2.1.294` takes the dots in the
+  // version for nested keys and prints nothing.
+  const times = JSON.parse(execFileSync('npm', ['view', '@anthropic-ai/claude-code', 'time', '--json'],
+    { encoding: 'utf8', timeout: 30_000, maxBuffer: 10 * 1024 * 1024 }));
+  const published = times[version] ?? 'unknown';
+  const platforms = Object.fromEntries(SEA_PLATFORMS.map((p) => [p, { binary: npmBinaryName(p) }]));
+  return { buildDate: `${published} (npm publish)`, platforms };
+}
+
+async function downloadFromNpm(platform, version, binDir) {
+  const spec = `@anthropic-ai/claude-code-${platform}@${version}`;
+  console.log(`  ↓ ${spec}`);
+  const tgz = execFileSync('npm', ['pack', spec, '--pack-destination', binDir],
+    { encoding: 'utf8', timeout: 600_000 }).trim().split('\n').pop();
+  const tgzPath = join(binDir, tgz);
+  const binary = npmBinaryName(platform);
+  execFileSync('tar', ['xzf', tgzPath, '-C', binDir, '--strip-components=1', `package/${binary}`]);
+  await rm(tgzPath, { force: true });
+  return (await stat(join(binDir, binary))).size;
+}
+
+// ──────────────────────────────────────────────
 //  Download npm wrapper package
 // ──────────────────────────────────────────────
 
@@ -184,13 +217,15 @@ export async function fetchAndProcess({
   outputDir = './output',
   rgVersion = DEFAULT_RG_VERSION,
   platforms = null,
+  source = 'cdn',
 }) {
   const tmpDir = join(outputDir, '.tmp');
   await mkdir(tmpDir, { recursive: true });
+  const fromNpm = source === 'npm';
 
   // ── Step 1: Manifest ──
-  console.log(`\n[1] Fetching manifest for v${version}...`);
-  const manifest = fetchJson(`${CDN_BASE}/${version}/manifest.json`);
+  console.log(`\n[1] Fetching manifest for v${version}${fromNpm ? ' (npm)' : ''}...`);
+  const manifest = fromNpm ? npmManifest(version) : fetchJson(`${CDN_BASE}/${version}/manifest.json`);
   console.log(`  Build: ${manifest.buildDate}`);
 
   // ── Step 2: Download SEA binaries ──
@@ -202,7 +237,9 @@ export async function fetchAndProcess({
     if (!info) { console.log(`  [skip] ${platform}`); return; }
     const binDir = join(tmpDir, 'bins', platform);
     await mkdir(binDir, { recursive: true });
-    const size = await downloadFile(`${CDN_BASE}/${version}/${platform}/${info.binary}`, join(binDir, info.binary));
+    const size = fromNpm
+      ? await downloadFromNpm(platform, version, binDir)
+      : await downloadFile(`${CDN_BASE}/${version}/${platform}/${info.binary}`, join(binDir, info.binary));
     console.log(`  ✓ ${platform} (${(size / 1024 / 1024).toFixed(0)}MB)`);
   }));
 
@@ -326,11 +363,17 @@ if (isMain) {
     else if (args[i] === '--output' && args[i+1]) flags.outputDir = args[++i];
     else if (args[i] === '--rg-version' && args[i+1]) flags.rgVersion = args[++i];
     else if (args[i] === '--platforms' && args[i+1]) flags.platforms = args[++i].split(',');
+    else if (args[i] === '--source' && args[i+1]) flags.source = args[++i];
     else if (args[i] === '--latest') flags.latest = true;
   }
 
+  if (flags.source && !['cdn', 'npm'].includes(flags.source)) {
+    console.error(`Unknown --source ${flags.source} (expected cdn or npm)`);
+    process.exit(1);
+  }
+
   if (!flags.version && !flags.latest) {
-    console.error('Usage: node fetch-and-process.mjs --version <ver> [--output <dir>]');
+    console.error('Usage: node fetch-and-process.mjs --version <ver> [--output <dir>] [--source cdn|npm]');
     console.error('       node fetch-and-process.mjs --latest');
     process.exit(1);
   }
