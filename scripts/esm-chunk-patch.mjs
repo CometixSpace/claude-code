@@ -263,57 +263,116 @@ function stripBunfsRoot(value) {
 //
 //  The site is identified by its argument, not by position: the URL comes
 //  from a helper resolving HOOKS_WORKER_URL, which is what makes it the hooks
-//  worker rather than any other.
+//  worker rather than any other. Through 2.1.294 the helper is called right
+//  in the argument list; since 2.1.295 it is a parameter default,
+//  `function f(e = helper()) { … new Worker(e, …) }`, so an identifier
+//  argument is followed back to the default of the parameter it names.
+//
+//  The helper's HOOKS_WORKER_URL needs fixing too. Upstream it is a BunFS
+//  path the helper appends to a scheme — `new URL(\`file://${e}\`)`, or on
+//  Windows the bare path once it starts with the BunFS root. E2 has made it
+//  relative ("./src/…") and the root "./", so on macOS/Linux the URL came
+//  out as file://./src/… — host "." — and Node refused it ("File URL host
+//  must be "localhost" or empty"), while Windows handed the worker a path
+//  Node resolves against the working directory. No plugin's hooks module
+//  could load. Inside the helper the value becomes what upstream meant: an
+//  absolute path that reads as a file URL after `file://`, resolved from
+//  the chunk E2 made it relative to.
 // ──────────────────────────────────────────────
+
+// href minus "file://": "/Users/…" on POSIX, "/C:/Users/…" on Windows — the
+// latter misses the "./" root test and takes the URL branch as well.
+const absoluteFileUrlPath = (rel) =>
+  `new URL(${JSON.stringify(rel)},import.meta.url).href.slice(7)`;
 
 export function rewriteHooksWorker(code) {
   if (!code.includes('HOOKS_WORKER_URL') || !code.includes('Worker')) {
-    return { code, rewritten: 0 };
+    return { code, rewritten: 0, urls: 0 };
   }
   let ast;
   try {
     ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' });
   } catch {
-    return { code, rewritten: 0 };
+    return { code, rewritten: 0, urls: 0 };
   }
 
   // The chunk that builds the hooks worker also carries library code that
   // constructs its own, so find the helper resolving HOOKS_WORKER_URL first
   // and rewrite only the Worker taking its result.
-  const providers = new Set();
+  const providers = new Map();
   const workers = [];
-  (function visit(node) {
+  // `defaults` maps each parameter name in scope to its default expression;
+  // a nearer parameter of the same name without one shadows it.
+  (function visit(node, defaults) {
     const body = node.type === 'VariableDeclarator' ? node.init
       : node.type === 'FunctionDeclaration' ? node.body
       : null;
     if (body && node.id?.type === 'Identifier') {
       const source = code.slice(body.start, body.end);
       if (source.includes('HOOKS_WORKER_URL') && source.includes('hooks-worker')) {
-        providers.add(node.id.name);
+        providers.set(node.id.name, body);
       }
     }
-    if (node.type === 'NewExpression' && node.callee?.name === 'Worker') workers.push(node);
+    if (Array.isArray(node.params)) {
+      defaults = new Map(defaults);
+      for (const param of node.params) {
+        if (param.type === 'AssignmentPattern' && param.left.type === 'Identifier') {
+          defaults.set(param.left.name, param.right);
+        } else if (param.type === 'Identifier') {
+          defaults.delete(param.name);
+        }
+      }
+    }
+    if (node.type === 'NewExpression' && node.callee?.name === 'Worker') {
+      const arg = node.arguments[0];
+      workers.push({ node, url: arg?.type === 'Identifier' ? defaults.get(arg.name) : arg });
+    }
     for (const key of Object.keys(node)) {
       const child = node[key];
       if (Array.isArray(child)) {
-        for (const item of child) if (item && typeof item.type === 'string') visit(item);
+        for (const item of child) if (item && typeof item.type === 'string') visit(item, defaults);
       } else if (child && typeof child.type === 'string') {
-        visit(child);
+        visit(child, defaults);
       }
     }
-  })(ast);
+  })(ast, new Map());
 
-  const matches = workers.filter((node) =>
-    node.arguments[0]?.type === 'CallExpression' &&
-    providers.has(node.arguments[0].callee?.name));
+  const matches = workers
+    .filter(({ url }) => url?.type === 'CallExpression' && providers.has(url.callee?.name));
+
+  const edits = matches.map(({ node }) => ({
+    start: node.callee.start, end: node.callee.end, text: 'globalThis.__ccHooksWorker',
+  }));
+
+  // Only the helpers a rewritten Worker actually draws from.
+  const urlEdits = [];
+  for (const name of new Set(matches.map(({ url }) => url.callee.name))) {
+    (function visit(node) {
+      if (node.type === 'Property' && !node.computed
+          && (node.key.name ?? node.key.value) === 'HOOKS_WORKER_URL'
+          && node.value.type === 'Literal' && typeof node.value.value === 'string'
+          && /^\.\.?\//.test(node.value.value)) {
+        urlEdits.push({
+          start: node.value.start, end: node.value.end,
+          text: absoluteFileUrlPath(node.value.value),
+        });
+      }
+      for (const key of Object.keys(node)) {
+        const child = node[key];
+        if (Array.isArray(child)) {
+          for (const item of child) if (item && typeof item.type === 'string') visit(item);
+        } else if (child && typeof child.type === 'string') {
+          visit(child);
+        }
+      }
+    })(providers.get(name));
+  }
 
   let out = code;
-  for (const node of matches.sort((a, b) => b.callee.start - a.callee.start)) {
-    out = out.slice(0, node.callee.start)
-      + 'globalThis.__ccHooksWorker'
-      + out.slice(node.callee.end);
+  for (const { start, end, text } of [...edits, ...urlEdits].sort((a, b) => b.start - a.start)) {
+    out = out.slice(0, start) + text + out.slice(end);
   }
-  return { code: out, rewritten: matches.length };
+  return { code: out, rewritten: matches.length, urls: urlEdits.length };
 }
 
 // ──────────────────────────────────────────────
@@ -477,6 +536,76 @@ export function patchImportMetaRequire(code) {
 }
 
 // ──────────────────────────────────────────────
+//  E9: `claude plugin test` children → VM Modules flags
+//
+//  `claude plugin test` runs each test file in a child of the current binary
+//  (`plugin test --file <file> <root>`), and the child loads the testing kit
+//  through vm.SourceTextModule. Bun has it built in; Node only exposes it
+//  under --experimental-vm-modules, so every test file failed to load:
+//
+//    TypeError: uo.SourceTextModule is not a constructor
+//
+//  The child's environment is rebuilt from a whitelist with extendEnv off,
+//  so a NODE_OPTIONS the user sets never reaches it. The flags go into that
+//  environment at the spawn site, wrapping whatever expression builds it —
+//  a call in 2.1.285 (`env: f(g())`), an object of spreads by 2.1.303. The
+//  child's stderr is inherited, so the warning flag is what keeps the
+//  ExperimentalWarning off the parent's terminal.
+// ──────────────────────────────────────────────
+
+const PLUGIN_TEST_ARGV = /["']plugin["']\s*,\s*["']test["']\s*,\s*["']--file["']/;
+const VM_MODULES_NODE_OPTIONS = '--experimental-vm-modules --disable-warning=ExperimentalWarning';
+
+const propertyNamed = (object, name) => object.properties.find((p) =>
+  p.type === 'Property' && !p.computed && (p.key.name ?? p.key.value) === name);
+
+export function rewritePluginTestEnv(code) {
+  if (!PLUGIN_TEST_ARGV.test(code)) return { code, rewritten: 0 };
+  let ast;
+  try {
+    ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' });
+  } catch {
+    return { code, rewritten: 0 };
+  }
+
+  // spawn(cmd, [...prefix, "plugin", "test", "--file", file, root], { env, … })
+  const sites = [];
+  (function visit(node) {
+    if (node.type === 'CallExpression') {
+      const [, argv, options] = node.arguments;
+      const args = argv?.type === 'ArrayExpression' ? argv.elements : [];
+      const isTestChild = args.some((arg, i) => arg?.value === 'plugin'
+        && args[i + 1]?.value === 'test' && args[i + 2]?.value === '--file');
+      const env = isTestChild && options?.type === 'ObjectExpression'
+        ? propertyNamed(options, 'env') : null;
+      // An environment that already sets NODE_OPTIONS means upstream took
+      // this over; leave it to them.
+      const settled = env?.value.type === 'ObjectExpression'
+        && propertyNamed(env.value, 'NODE_OPTIONS');
+      if (env && !settled) sites.push(env);
+    }
+    for (const key of Object.keys(node)) {
+      const child = node[key];
+      if (Array.isArray(child)) {
+        for (const item of child) if (item && typeof item.type === 'string') visit(item);
+      } else if (child && typeof child.type === 'string') {
+        visit(child);
+      }
+    }
+  })(ast);
+
+  // The whole property is replaced, so a shorthand `{ env }` comes out right.
+  let out = code;
+  for (const prop of sites.sort((a, b) => b.start - a.start)) {
+    const value = out.slice(prop.value.start, prop.value.end);
+    out = out.slice(0, prop.start)
+      + `env:{...(${value}),NODE_OPTIONS:${JSON.stringify(VM_MODULES_NODE_OPTIONS)}}`
+      + out.slice(prop.end);
+  }
+  return { code: out, rewritten: sites.length };
+}
+
+// ──────────────────────────────────────────────
 //  E4: Bun polyfill as an ESM module
 //
 //  templates/bun-polyfill.js is written as CJS (require, __dirname). Rather
@@ -544,7 +673,8 @@ export async function patchSplitEsm({ extractDir, entryRel = 'cli.js' }) {
   const files = await listJsFiles(extractDir);
   const stats = {
     files: files.length, specifiers: 0, literals: 0,
-    metaRequire: 0, rebrand: 0, hoisted: 0, hooksWorkers: 0, nodeFetch: 0, importMeta: 0, ast: {},
+    metaRequire: 0, rebrand: 0, hoisted: 0, hooksWorkers: 0, hooksWorkerUrls: 0, nodeFetch: 0,
+    importMeta: 0, pluginTestMarkers: 0, pluginTests: 0, ast: {},
   };
   let leftover = 0;
   const bunOnly = [];
@@ -574,6 +704,12 @@ export async function patchSplitEsm({ extractDir, entryRel = 'cli.js' }) {
     const hooksWorker = rewriteHooksWorker(code);
     code = hooksWorker.code;
     stats.hooksWorkers += hooksWorker.rewritten;
+    stats.hooksWorkerUrls += hooksWorker.urls;
+
+    if (PLUGIN_TEST_ARGV.test(code)) stats.pluginTestMarkers++;
+    const pluginTest = rewritePluginTestEnv(code);
+    code = pluginTest.code;
+    stats.pluginTests += pluginTest.rewritten;
 
     const nodeFetch = rewriteNodeFetch(code, prefix);
     code = nodeFetch.code;
@@ -686,6 +822,20 @@ export async function patchSplitEsm({ extractDir, entryRel = 'cli.js' }) {
   if (entries.length > 1 && stats.hooksWorkers !== 1) {
     throw new Error(
       `expected one hooks Worker creation site, rewrote ${stats.hooksWorkers}`,
+    );
+  }
+  // The construction alone is not enough: with its URL still relative the
+  // worker starts nowhere, and every plugin's hooks module fails to load.
+  if (entries.length > 1 && stats.hooksWorkerUrls === 0) {
+    throw new Error('found the hooks Worker, but no relative HOOKS_WORKER_URL in its helper to resolve');
+  }
+
+  // The argv survived but no spawn carrying it was rewritten: the call moved
+  // to a shape E9 does not know, and plugin test children would start
+  // without SourceTextModule again.
+  if (stats.pluginTestMarkers > 0 && stats.pluginTests === 0) {
+    throw new Error(
+      `plugin test child argv found in ${stats.pluginTestMarkers} module(s), but no spawn site was rewritten`,
     );
   }
 
