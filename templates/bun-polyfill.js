@@ -48,13 +48,14 @@ if (typeof globalThis.Bun === "undefined") {
       // The parent may have been launched with flags a worker rejects, so
       // start from the caller's list rather than inheriting process.execArgv.
       const execArgv = options.execArgv ?? [];
+      // Hook modules are loaded through vm.SourceTextModule. The worker has
+      // its own process object, so warnings it raises go straight to the
+      // terminal — without the second flag, one ExperimentalWarning per start.
+      const vmFlags = ["--experimental-vm-modules", "--disable-warning=ExperimentalWarning"];
       this._stopped = false;
       this._worker = new NodeWorker(url, {
         ...options,
-        // Hook modules are loaded through vm.SourceTextModule.
-        execArgv: execArgv.includes("--experimental-vm-modules")
-          ? execArgv
-          : [...execArgv, "--experimental-vm-modules"],
+        execArgv: [...execArgv, ...vmFlags.filter((flag) => !execArgv.includes(flag))],
       });
 
       // Everything that can go wrong arrives as one error event, once: the
@@ -444,6 +445,26 @@ if (typeof globalThis.Bun === "undefined") {
   }
 
   // ──────────────────────────────────────────────
+  // Bind before returning — shared by Bun.listen and Bun.serve
+  //
+  // Both Bun APIs come back already bound, and callers read .port at once:
+  // the loopback MCP server behind plugin tools passes port 0 and builds its
+  // URL from .port. Node's listen(port, host) looks the host up first, so on
+  // that tick address() is still null and .port reads back the 0 it was
+  // given. An IP literal needs no lookup — bind it now, through the same
+  // _listen2 that listen() itself ends in. Anything else (a hostname, a
+  // string port) still goes through listen().
+  // ──────────────────────────────────────────────
+  function listenNow(server, port, host) {
+    const family = net.isIP(host);
+    if (family && Number.isInteger(port) && typeof server._listen2 === "function") {
+      server._listen2(host, port, family, 511, undefined, 0);
+    } else {
+      server.listen(port, host);
+    }
+  }
+
+  // ──────────────────────────────────────────────
   // Bun.listen — TCP server with Bun-like socket handlers
   // ──────────────────────────────────────────────
   function bunListen(opts = {}) {
@@ -458,7 +479,7 @@ if (typeof globalThis.Bun === "undefined") {
     const port = opts.port ?? 0;
     // Track bound address; Bun.listen returns a usable port synchronously.
     let bound = { address: host, port };
-    server.listen(port, host);
+    listenNow(server, port, host);
     try {
       const addr = server.address();
       if (addr && typeof addr === "object") bound = addr;
@@ -577,7 +598,7 @@ if (typeof globalThis.Bun === "undefined") {
     } else {
       server = http.createServer(handler);
     }
-    server.listen(port, host);
+    listenNow(server, port, host);
 
     return {
       get port() {
