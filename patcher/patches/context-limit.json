@@ -1,35 +1,93 @@
 {
   "id": "context-limit",
   "title": "Let CLAUDE_CODE_CONTEXT_LIMIT set the context window for any model",
-  "description": "The resolver already reads CLAUDE_CODE_MAX_CONTEXT_TOKENS, but only honours it for models that pass an eligibility check — everything else falls through to the 200000 default. This adds an unconditional short-circuit at the top of the resolver, under a separate variable name so the official one keeps its meaning.",
+  "description": "The resolver already reads CLAUDE_CODE_MAX_CONTEXT_TOKENS, but only honours it for models that pass an eligibility check — everything else falls through to the 200000 default. This adds an unconditional short-circuit at the top of the resolver, under a separate variable name so the official one keeps its meaning.\n\nBy 2.1.302 the resolver is split in two: a two-argument entry that answers the [1m] opt-in with 1e6 and clamps some models to 200000, wrapped around a one-argument body. Callers reach the body only through the entry, so the entry is where the short-circuit has to go; patching the body alone would leave the variable ignored for [1m] models and capped for the clamped ones. The body keeps its own short-circuit, as on an unsplit build, so a caller that ever reaches it directly is covered too.",
   "risk": "medium",
-  "sites": [
+  "stages": [
     {
-      "id": "resolver-guard",
-      "description": "The context-window resolver: takes (model, context), returns 1e6 early for the long-context cases, and ends at the default constant. Identified by reading CLAUDE_CODE_MAX_CONTEXT_TOKENS and returning 1e6 — the other two functions mentioning that variable take zero and three parameters respectively. Arity is kept at 2 only as a tiebreaker; the 1e6 return is the real signal.",
-      "marker": "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
-      "match": {
-        "node": "FunctionDeclaration",
-        "where": {
-          "params.length": 2
+      "id": "main",
+      "sites": [
+        {
+          "id": "resolver-guard",
+          "description": "The resolver body: reads CLAUDE_CODE_MAX_CONTEXT_TOKENS, returns 1e6 early for the long-context cases, and ends at the default constant. The 1e6 return is the signal — of the functions mentioning the variable, no other returns it. Arity is not: this took (model, context) until the split and takes (model) after it.",
+          "marker": "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+          "match": {
+            "node": "FunctionDeclaration",
+            "contains": "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+            "has": {
+              "node": "ReturnStatement",
+              "where": {
+                "argument.type": "Literal",
+                "argument.value": 1000000
+              }
+            }
+          },
+          "capture": {
+            "resolver": "id.name"
+          },
+          "edit": {
+            "op": "prepend-body",
+            "text": "var __ccppCtx=+process.env.CLAUDE_CODE_CONTEXT_LIMIT;if(Number.isFinite(__ccppCtx)&&__ccppCtx>0)return __ccppCtx;"
+          },
+          "expect": "required"
         },
-        "contains": "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
-        "has": {
-          "node": "ReturnStatement",
-          "where": {
-            "argument.type": "Literal",
-            "argument.value": 1000000
-          }
+        {
+          "id": "context-arg",
+          "description": "The resolver's second parameter, the context it was handed. Present on an unsplit resolver; gone once it is the body of a split one, and then the split stage runs. Matched on the resolver itself so it hits on either shape — a probe that matched only the split shape would report drift on every unsplit build.",
+          "sameFileAs": "resolver-guard",
+          "marker": "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+          "match": {
+            "node": "FunctionDeclaration",
+            "where": {
+              "id.name": "{{resolver}}"
+            }
+          },
+          "capture": {
+            "contextArg": "params.1.name"
+          },
+          "expect": "required"
         }
+      ]
+    },
+    {
+      "id": "split",
+      "when": {
+        "notCaptured": "contextArg"
       },
-      "capture": {
-        "resolver": "id.name"
-      },
-      "edit": {
-        "op": "prepend-body",
-        "text": "var __ccppCtx=+process.env.CLAUDE_CODE_CONTEXT_LIMIT;if(Number.isFinite(__ccppCtx)&&__ccppCtx>0)return __ccppCtx;"
-      },
-      "expect": "required"
+      "sites": [
+        {
+          "id": "split-entry",
+          "description": "The entry in front of the split body: (model, context), returns 1e6 for the [1m] opt-in before it reaches the body, then calls the body and may clamp what it returns. Required once the split is seen — patching the body alone would leave both of those paths out.",
+          "sameFileAs": "resolver-guard",
+          "marker": "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+          "match": {
+            "node": "FunctionDeclaration",
+            "where": {
+              "params.length": 2
+            },
+            "has": [
+              {
+                "node": "ReturnStatement",
+                "where": {
+                  "argument.type": "Literal",
+                  "argument.value": 1000000
+                }
+              },
+              {
+                "node": "CallExpression",
+                "where": {
+                  "callee.name": "{{resolver}}"
+                }
+              }
+            ]
+          },
+          "edit": {
+            "op": "prepend-body",
+            "text": "var __ccppCtx=+process.env.CLAUDE_CODE_CONTEXT_LIMIT;if(Number.isFinite(__ccppCtx)&&__ccppCtx>0)return __ccppCtx;"
+          },
+          "expect": "required"
+        }
+      ]
     }
   ],
   "verify": [
