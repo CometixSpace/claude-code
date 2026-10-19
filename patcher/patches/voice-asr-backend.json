@@ -9,7 +9,7 @@
   "sites": [
     {
       "id": "transport",
-      "description": "The adapter, inserted ahead of the connector it stands in for. Self-contained rather than imported: the chunk it lands in is chosen by content, so its path is not something the patch can name.",
+      "description": "The adapter, inserted ahead of the connector it stands in for. Self-contained rather than imported: the chunk it lands in is chosen by content, so its path is not something the patch can name.\n\nThe connector is told apart by its OAuth log line and the linear16 encoding it requests. It used to be told apart by reading VOICE_STREAM_BASE_URL, but by 2.1.302 that variable is read through the environment table, so the name no longer appears in the function.",
       "marker": "[voice_stream] No OAuth token available",
       "match": {
         "node": "FunctionDeclaration",
@@ -18,7 +18,7 @@
         },
         "contains": [
           "No OAuth token available",
-          "VOICE_STREAM_BASE_URL"
+          "linear16"
         ]
       },
       "capture": {
@@ -42,7 +42,7 @@
         },
         "contains": [
           "No OAuth token available",
-          "VOICE_STREAM_BASE_URL"
+          "linear16"
         ]
       },
       "capture": {
