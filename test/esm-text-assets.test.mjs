@@ -26,10 +26,12 @@ for (const bunfsRoot of BUNFS_ROOTS) {
 
       const markdown = '# Packaged prompt\n你好\n';
       const template = 'Template: {{value}}\n';
+      const script = 'throw new Error("embedded source asset was executed");\n';
       const data = { source: 'package' };
       await Promise.all([
         writeFile(join(assetDir, 'prompt.md'), markdown),
         writeFile(join(assetDir, 'template.txt'), template),
+        writeFile(join(assetDir, 'helper.mjs'), script),
         writeFile(join(assetDir, 'data.json'), JSON.stringify(data)),
         writeFile(join(moduleDir, 'runtime.mjs'), patchImportMetaRequire(
           'export const load = import.meta.require;',
@@ -43,6 +45,7 @@ for (const bunfsRoot of BUNFS_ROOTS) {
         'console.log(JSON.stringify([',
         `load("${bunfsRoot}assets/prompt.md"),`,
         `load("${bunfsRoot}assets/template.txt"),`,
+        `load("${bunfsRoot}assets/helper.mjs"),`,
         `load("${bunfsRoot}assets/data.json"),`,
         `load(${JSON.stringify(join(assetDir, 'prompt.md'))}),`,
         `load.resolve("${bunfsRoot}assets/prompt.md"),`,
@@ -50,7 +53,7 @@ for (const bunfsRoot of BUNFS_ROOTS) {
       ].join('\n');
       const entry = join(moduleDir, 'entry.mjs');
       await writeFile(entry, rewriteBunfsPaths(source, nested ? '../' : './').code);
-      const expected = [markdown, template, data, markdown, join(assetDir, 'prompt.md')];
+      const expected = [markdown, template, script, data, markdown, join(assetDir, 'prompt.md')];
       async function check(cwd) {
         const { stdout } = await execFileAsync(process.execPath, [entry], { cwd, timeout: 15000 });
         assert.deepEqual(JSON.parse(stdout), expected, `assets read from ${cwd}`);
