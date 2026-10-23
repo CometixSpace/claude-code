@@ -38,7 +38,7 @@ Applied directory-wide by `scripts/esm-chunk-patch.mjs`:
 |---------|-------------|
 | E1 | Virtual-filesystem paths → specifiers relative to the referencing file (~100k–124k per platform). Both sides may be nested; the prefix is computed per file |
 | E2 | Runtime paths — native modules and `fs.readFile` assets — get the same treatment. They stay where upstream puts them, beside the modules, so nothing has to move |
-| E3 | `import.meta.require` (Bun-only) → a `createRequire` wrapper. Returns file *content* for `.md`/`.txt`, matching Bun's text loader — since 2.1.246 the bundled skills are pulled in that way, and Node would otherwise compile markdown as JS |
+| E3 | `import.meta.require` (Bun-only) → a `createRequire` wrapper. Returns file *content* for `.md`/`.txt` and embedded `.mjs` source assets, matching Bun's text loader — since 2.1.246 bundled skills are pulled in that way, and Node would otherwise compile or execute them as JS |
 | E4 | The Bun polyfill ships as `bun-polyfill.mjs`, imported first by `cli.js` and by the hooks worker, so `globalThis.Bun` exists before any module body runs |
 | E5 | Since 2.1.250 modules `require()` each other at top level, and some of those close a cycle the import graph cannot break. Two layers: hoist the require to a bare `import` so the target evaluates first (clears ~90% of sites), and hand the rest a lazy stand-in that resolves on first touch. Returning `undefined` there is what broke startup in 2.1.259 |
 
@@ -91,7 +91,7 @@ cli.js                ESM entry point
 chunk-*.js            Code-split modules (~1400–1800)
 bun-polyfill.mjs      Bun globals, imported first
 *.node                Native modules — see below
-*.md, *.txt           Embedded skill prompts and templates (2.1.246+)
+*.md, *.txt, *.mjs    Embedded skill prompts, templates, and source assets (2.1.246+)
 *.min.js, *.asset     Artifact runtimes and the design-canvas template
 sdk-tools.d.ts        SDK type definitions
 vendor/
