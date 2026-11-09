@@ -373,9 +373,9 @@ export function astPatch(code, sourceType = 'script') {
       });
 
       // P5b: inject binary availability check after the env-check if-statement
-      // Uses "which" on unix, "where" on windows. If both bfs+ugrep are
-      // found, shadow mode proceeds; otherwise DP() returns false → Tool mode.
-      const binCheck = `if(typeof globalThis.__dpBinOk>"u"){try{let _wc=process.platform==="win32"?"where":"which";${REQ}("child_process").execFileSync(_wc,["bfs"],{encoding:"utf8",timeout:2e3});${REQ}("child_process").execFileSync(_wc,["ugrep"],{encoding:"utf8",timeout:2e3});globalThis.__dpBinOk=!0}catch{globalThis.__dpBinOk=!1}}if(!globalThis.__dpBinOk)return!1;`;
+      // Prefer pure-JS Bun.which when polyfill is loaded; fall back to which/where.
+      // If both bfs+ugrep are found, shadow mode proceeds; otherwise DP() returns false → Tool mode.
+      const binCheck = `if(typeof globalThis.__dpBinOk>"u"){try{if(typeof globalThis.Bun?.which==="function"){globalThis.__dpBinOk=Boolean(globalThis.Bun.which("bfs")&&globalThis.Bun.which("ugrep"))}else{let _wc=process.platform==="win32"?"where":"which";${REQ}("child_process").execFileSync(_wc,["bfs"],{encoding:"utf8",timeout:2e3});${REQ}("child_process").execFileSync(_wc,["ugrep"],{encoding:"utf8",timeout:2e3});globalThis.__dpBinOk=!0}}catch{globalThis.__dpBinOk=!1}}if(!globalThis.__dpBinOk)return!1;`;
       replacements.push({
         start: s1.end,
         end: s1.end,
@@ -406,11 +406,11 @@ export function astPatch(code, sourceType = 'script') {
 
       // Inject before the `return[` statement that builds the shell function array.
       // The return statement is always present and unique within AF_.
-      // We insert a try/catch that resolves the system binary via `which`
-      // and overwrites M (the fallback path variable).
+      // We insert a try/catch that resolves the system binary via `Bun.which`
+      // (or `which`/`where`) and overwrites M (the fallback path variable).
       const returnIdx = code.indexOf('return[', node.start);
       if (returnIdx !== -1 && returnIdx < node.end) {
-        const injection = `try{let _wc=process.platform==="win32"?"where":"which",_w=${REQ}("child_process").execFileSync(_wc,[${paramTarget}],{encoding:"utf8",timeout:2e3}).trim();if(_w&&${REQ}("fs").existsSync(_w))M=_w}catch{}`;
+        const injection = `try{let _w=typeof globalThis.Bun?.which==="function"?globalThis.Bun.which(${paramTarget}):${REQ}("child_process").execFileSync(process.platform==="win32"?"where":"which",[${paramTarget}],{encoding:"utf8",timeout:2e3}).trim().split(/\\r?\\n/)[0];if(_w&&${REQ}("fs").existsSync(_w))M=_w}catch{}`;
         replacements.push({ start: returnIdx, end: returnIdx, replacement: injection });
         stats.p8 = true;
       }
