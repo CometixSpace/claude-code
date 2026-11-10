@@ -70,6 +70,20 @@ if (typeof globalThis.Bun === "undefined") {
   let _caCacheFlushScheduled = false;
   const _caCachePath = path.join(os.tmpdir(), "claude-code-ca-validto-v1.json");
 
+  function _fastCertKey(str) {
+    const s = String(str);
+    const len = s.length;
+    let h1 = 0x811c9dc5;
+    let h2 = 0x9e3779b9;
+    const step = len > 512 ? 4 : 1;
+    for (let i = 0; i < len; i += step) {
+      const c = s.charCodeAt(i);
+      h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
+      h2 = Math.imul(h2 ^ c, 0x85ebca6b) >>> 0;
+    }
+    return `${h1.toString(36)}_${h2.toString(36)}_${len.toString(36)}`;
+  }
+
   globalThis.__ccGetCertValidTo = function __ccGetCertValidTo(certPem, X509Ctor) {
     if (_caCache === null) {
       try {
@@ -80,7 +94,7 @@ if (typeof globalThis.Bun === "undefined") {
         _caCache = {};
       }
     }
-    const key = crypto.createHash("sha256").update(String(certPem)).digest("hex").slice(0, 16);
+    const key = _fastCertKey(certPem);
     const cached = _caCache[key];
     if (typeof cached === "number") {
       return cached === -1 ? NaN : cached;
@@ -109,6 +123,39 @@ if (typeof globalThis.Bun === "undefined") {
     }
     return ms;
   };
+
+  try {
+    const _tls = require("tls");
+    const _origGetCACerts = _tls.getCACertificates;
+    if (typeof _origGetCACerts === "function") {
+      const _sysCaCachePath = path.join(os.tmpdir(), "claude-code-system-ca-v1.json");
+      let _sysCaMem = null;
+      _tls.getCACertificates = function getCACertificates(type) {
+        if (type === "system") {
+          if (_sysCaMem) return _sysCaMem;
+          try {
+            const st = fs.statSync(_sysCaCachePath, { throwIfNoEntry: false });
+            if (st && Date.now() - st.mtimeMs < 86_400_000) {
+              const parsed = JSON.parse(fs.readFileSync(_sysCaCachePath, "utf8"));
+              if (Array.isArray(parsed)) {
+                _sysCaMem = parsed;
+                return parsed;
+              }
+            }
+          } catch {}
+          const certs = _origGetCACerts.call(this, type);
+          if (Array.isArray(certs)) {
+            _sysCaMem = certs;
+            setImmediate(() => {
+              try { fs.writeFileSync(_sysCaCachePath, JSON.stringify(certs)); } catch {}
+            }).unref?.();
+          }
+          return certs;
+        }
+        return _origGetCACerts.apply(this, arguments);
+      };
+    }
+  } catch {}
 
   function isExecutableFile(filePath, isWin) {
     try {

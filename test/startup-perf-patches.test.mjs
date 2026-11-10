@@ -9,6 +9,8 @@ import * as acorn from 'acorn';
 import {
   buildPolyfillModule,
   pruneRedundantBareImports,
+  rewriteEnvConfigCache,
+  rewriteLazyEngineInitAndModelPicker,
   rewriteNoopSlowOpUsing,
   rewriteParallelReplImports,
   rewriteSystemCaCertCache,
@@ -154,6 +156,21 @@ test('rewriteParallelReplImports converts sequential AppRoot/REPL imports and wi
   assert.equal(outOnboarding.rewritten, 1);
   assert.ok(outOnboarding.code.includes('(globalThis.__ccPreloadRepl?.(),await import("./chunk-c71b3689.js"))'));
   assert.doesNotThrow(() => acorn.parse(outOnboarding.code, { ecmaVersion: 'latest', sourceType: 'module' }));
+
+  const sampleTzr = [
+    'async function tzr(o,d,h,M,C){let k=AF(o,d);XDo(),wYr(h,M,C);',
+    'await Promise.race([o.waitUntilExit()]);await rwr.of(h.host).runBeforeInteractiveShutdown()}',
+  ].join('');
+  const outTzr = rewriteParallelReplImports(sampleTzr);
+  assert.equal(outTzr.rewritten, 1);
+  assert.ok(outTzr.code.includes('XDo(),setImmediate(()=>wYr(h,M,C));'));
+  assert.doesNotThrow(() => acorn.parse(outTzr.code, { ecmaVersion: 'latest', sourceType: 'module' }));
+
+  const sampleOtel = 'function O3s(o,R,b){import("./chunk-g6swey1c.js").then((_)=>_.maybePrewarmRecallIndex(o));setImmediate(KDe,b)}';
+  const outOtel = rewriteParallelReplImports(sampleOtel);
+  assert.equal(outOtel.rewritten, 1);
+  assert.ok(outOtel.code.includes('setTimeout(KDe,1500,b).unref?.()'));
+  assert.doesNotThrow(() => acorn.parse(outOtel.code, { ecmaVersion: 'latest', sourceType: 'module' }));
 });
 
 test('rewriteNoopSlowOpUsing strips no-op tagged template using declarations', () => {
@@ -223,4 +240,84 @@ test('P5 and P8 use Bun.which when available', () => {
   const p8Out = astPatch(p8Src, 'module');
   assert.equal(p8Out.stats.p8, true);
   assert.ok(p8Out.code.includes('globalThis.Bun.which(t)'));
+});
+
+test('rewriteEnvConfigCache caches process.env reads within a microtask turn and invalidates on set/unset', async () => {
+  const sample = [
+    'var PN="CLAUDE_CODE_LAZY_ENV_GETTERS";',
+    'function N5(t,o,_=!0){let E={};return Object.defineProperties(E,{set:{value:(r,n)=>{process.env[r]=String(n)}},unset:{value:(r)=>{delete process.env[r]}}}),E}',
+    'function Et(t,o,_){let E=_,r;return()=>{let n=process.env[t];if(n!==E)r=o.parse(n),E=n;return r}}',
+    'export{N5,Et};',
+  ].join('');
+  const { code, rewritten } = rewriteEnvConfigCache(sample);
+  assert.equal(rewritten, 3);
+  assert.ok(code.includes('__ccEnvGen'));
+  assert.doesNotThrow(() => acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' }));
+
+  const mod = await import(`data:text/javascript,${encodeURIComponent(code)}`);
+  let parseCount = 0;
+  const schema = { parse: (v) => { parseCount++; return v ?? 'default'; } };
+  const cfg = mod.N5({}, null);
+  const getter = mod.Et('CC_TEST_ENV_CACHE_VAR', schema, cfg);
+  delete process.env.CC_TEST_ENV_CACHE_VAR;
+
+  assert.equal(getter(), 'default');
+  assert.equal(getter(), 'default');
+  assert.equal(parseCount, 1);
+
+  cfg.set('CC_TEST_ENV_CACHE_VAR', 'updated');
+  assert.equal(getter(), 'updated');
+  assert.equal(parseCount, 2);
+
+  cfg.unset('CC_TEST_ENV_CACHE_VAR');
+  assert.equal(getter(), 'default');
+  assert.equal(parseCount, 3);
+});
+
+test('rewriteLazyEngineInitAndModelPicker defers Vet init, short-circuits EUn, and memoizes Wc RegExp', async () => {
+  const sampleEngine = [
+    'function Ys(e){return{models:e.models??[],unavailable_models:e.unavailableModels??[],account:e.account}}',
+    'export function Vet({commands:r=[],models:o=[],unavailableModels:n=[],agents:f=[],account:h={},outputStyle:S,availableOutputStyles:T}){',
+    'let Ee=Ys({commands:typeof r==="function"?r():r,models:typeof o==="function"?o():o,unavailableModels:typeof n==="function"?n():n,agents:typeof f==="function"?f():f,account:h,outputStyle:S,availableOutputStyles:T}),It=1;',
+    'return{initializationResult:()=>Promise.resolve(Ee),accountInfo:()=>Promise.resolve(Ee.account),supportedModels:()=>Promise.resolve(typeof o==="function"?o():Ee.models),supportedCommands:()=>Promise.resolve(typeof r==="function"?r():Ee.commands),supportedAgents:()=>Promise.resolve(typeof f==="function"?f():Ee.agents)}}',
+  ].join('');
+  const outEngine = rewriteLazyEngineInitAndModelPicker(sampleEngine);
+  assert.ok(outEngine.rewritten >= 6);
+  assert.doesNotThrow(() => acorn.parse(outEngine.code, { ecmaVersion: 'latest', sourceType: 'module' }));
+
+  const engineMod = await import(`data:text/javascript,${encodeURIComponent(outEngine.code)}`);
+  let modelsCalled = 0;
+  let unavailCalled = 0;
+  const handle = engineMod.Vet({
+    models: () => { modelsCalled++; return ['m1']; },
+    unavailableModels: () => { unavailCalled++; return ['u1']; },
+    account: { id: 'acc' },
+  });
+  // Neither models() nor unavailableModels() runs synchronously during Vet() creation!
+  assert.equal(modelsCalled, 0);
+  assert.equal(unavailCalled, 0);
+  const initRes = await handle.initializationResult();
+  assert.deepEqual(initRes.models, ['m1']);
+  assert.equal(modelsCalled, 1);
+  assert.equal(unavailCalled, 1);
+
+  const sampleModel = [
+    'var zb=new Set(["claude-vscode"]),a={CLAUDE_CODE_ENTRYPOINT:"cli"},bl="fable-default";',
+    'let peCalls=0,y4Calls=0;const list=[{id:"claude-fable-4",family:"fable"}];',
+    'function y4(){y4Calls++;return{models:list}}',
+    'function _Pe(){peCalls++;return[{disabled:!0}]}',
+    'function Kho(e){if(!zb.has(a.CLAUDE_CODE_ENTRYPOINT??""))return[];let r=e.length;return g("model_unavailable_gate",r),e}',
+    'function EUn(){return Kho(_Pe())}',
+    'function Wc(e){if(e==="fable"||e==="fable[1m]"){return bl}let r=y4().models.filter((s)=>s.family==="fable").map((s)=>s.id).sort((s,h)=>h.length-s.length);return new RegExp(`(?:^|[./])(${r.join("|")})(?:[-@]\\\\d{8})?$`,"i").exec(e)?.[1]?.toLowerCase()}',
+    'export{EUn,Wc,peCalls,y4Calls};',
+  ].join('');
+  const outModel = rewriteLazyEngineInitAndModelPicker(sampleModel);
+  assert.equal(outModel.rewritten, 3);
+  assert.doesNotThrow(() => acorn.parse(outModel.code, { ecmaVersion: 'latest', sourceType: 'module' }));
+
+  const modelMod = await import(`data:text/javascript,${encodeURIComponent(outModel.code)}`);
+  assert.deepEqual(modelMod.EUn(), []);
+  assert.equal(modelMod.peCalls, 0);
+  assert.equal(modelMod.Wc('claude-fable-4-20260101'), 'claude-fable-4');
+  assert.equal(modelMod.Wc('claude-fable-4-20260101'), 'claude-fable-4');
 });

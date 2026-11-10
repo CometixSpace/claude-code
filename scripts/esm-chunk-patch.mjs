@@ -892,7 +892,13 @@ export function rewriteParallelReplImports(code) {
   const hasReplPair = code.includes('AppRoot') && code.includes('REPL');
   const hasOnboardingCreateRoot = code.includes('createRoot') && code.includes('showSetupScreens');
   const hasInteractiveSetup = code.includes('startPreviewBrowserDiscovery') && code.includes('action_before_setup');
-  if (!hasReplPair && !hasOnboardingCreateRoot && !hasInteractiveSetup) {
+  const hasPostRender = code.includes('waitUntilExit') && code.includes('runBeforeInteractiveShutdown');
+  const hasDeferTelemetry = code.includes('maybePrewarmRecallIndex') && code.includes('setImmediate(');
+  const hasCliInteractiveEntry = code.includes('startCapturingEarlyInput') &&
+    code.includes('configureZodForStartup') &&
+    code.includes('cli_before_main_import');
+  if (!hasReplPair && !hasOnboardingCreateRoot && !hasInteractiveSetup &&
+      !hasPostRender && !hasDeferTelemetry && !hasCliInteractiveEntry) {
     return { code, rewritten: 0 };
   }
   let ast;
@@ -902,8 +908,119 @@ export function rewriteParallelReplImports(code) {
     return { code, rewritten: 0 };
   }
 
+  let setupScreensSpec = null;
+  let createRootSpec = null;
+  if (hasOnboardingCreateRoot) {
+    (function findSpecs(n) {
+      if (n.type === 'VariableDeclarator' &&
+          n.id?.type === 'Identifier' &&
+          n.init?.type === 'ArrowFunctionExpression' &&
+          n.init.body?.type === 'CallExpression' &&
+          n.init.body.callee?.name === '__ccRequire' &&
+          n.init.body.arguments?.[0]?.type === 'Literal') {
+        const spec = n.init.body.arguments[0].value;
+        if (code.includes(`${n.id.name}().showSetupScreens`)) {
+          setupScreensSpec = spec;
+        }
+      }
+      if (n.type === 'FunctionDeclaration' &&
+          n.async &&
+          code.slice(n.start, n.end).includes('Running showSetupScreens()')) {
+        (function findCreateRoot(sub) {
+          if (sub.type === 'VariableDeclarator' &&
+              hasObjectPatternKey(sub.id, 'createRoot') &&
+              sub.init?.type === 'AwaitExpression' &&
+              sub.init.argument?.type === 'ImportExpression' &&
+              sub.init.argument.source?.type === 'Literal') {
+            createRootSpec = sub.init.argument.source.value;
+          }
+          for (const k of Object.keys(sub)) {
+            const ch = sub[k];
+            if (Array.isArray(ch)) {
+              for (const it of ch) if (it && typeof it.type === 'string') findCreateRoot(it);
+            } else if (ch && typeof ch.type === 'string') {
+              findCreateRoot(ch);
+            }
+          }
+        })(n);
+      }
+      for (const k of Object.keys(n)) {
+        const ch = n[k];
+        if (Array.isArray(ch)) {
+          for (const it of ch) if (it && typeof it.type === 'string') findSpecs(it);
+        } else if (ch && typeof ch.type === 'string') {
+          findSpecs(ch);
+        }
+      }
+    })(ast);
+  }
+
+  let cliSpecs = null;
+  if (hasCliInteractiveEntry) {
+    const found = {};
+    (function scanCliImports(n) {
+      if (n.type === 'VariableDeclarator' &&
+          n.init?.type === 'AwaitExpression' &&
+          n.init.argument?.type === 'ImportExpression' &&
+          n.init.argument.source?.type === 'Literal') {
+        const spec = n.init.argument.source.value;
+        for (const k of ['enableConfigs', 'NON_REPL_SUBCOMMANDS', 'main']) {
+          if (hasObjectPatternKey(n.id, k)) found[k] = spec;
+        }
+      }
+      if (n.type === 'CallExpression' &&
+          n.callee?.type === 'MemberExpression' &&
+          n.callee.property?.name === 'configureZodForStartup' &&
+          n.callee.object?.type === 'AwaitExpression' &&
+          n.callee.object.argument?.type === 'ImportExpression' &&
+          n.callee.object.argument.source?.type === 'Literal') {
+        found.configureZodForStartup = n.callee.object.argument.source.value;
+      }
+      for (const k of Object.keys(n)) {
+        const ch = n[k];
+        if (Array.isArray(ch)) {
+          for (const it of ch) if (it && typeof it.type === 'string') scanCliImports(it);
+        } else if (ch && typeof ch.type === 'string') {
+          scanCliImports(ch);
+        }
+      }
+    })(ast);
+    if (found.enableConfigs && found.configureZodForStartup && found.main) {
+      cliSpecs = found;
+    }
+  }
+
   const edits = [];
   (function visit(node) {
+    if (cliSpecs &&
+        node.type === 'IfStatement' &&
+        code.slice(node.test.start, node.test.end).includes('process.stdin.isTTY') &&
+        code.slice(node.test.start, node.test.end).includes('process.stdout.isTTY') &&
+        node.consequent?.type === 'BlockStatement' &&
+        node.consequent.body.length > 0) {
+      const firstStmt = node.consequent.body[0];
+      if (firstStmt.type === 'VariableDeclaration') {
+        for (const d of firstStmt.declarations) {
+          if (hasObjectPatternKey(d.id, 'startCapturingEarlyInput') &&
+              hasObjectPatternKey(d.id, 'consumeEarlyInput') &&
+              d.init?.type === 'AwaitExpression' &&
+              d.init.argument?.type === 'ImportExpression') {
+            const origAwait = code.slice(d.init.start, d.init.end);
+            const preloads = [
+              `import(${JSON.stringify(cliSpecs.enableConfigs)})`,
+              ...(cliSpecs.NON_REPL_SUBCOMMANDS ? [`import(${JSON.stringify(cliSpecs.NON_REPL_SUBCOMMANDS)})`] : []),
+              `import(${JSON.stringify(cliSpecs.configureZodForStartup)}).then((_z)=>{_z.configureZodForStartup();return import(${JSON.stringify(cliSpecs.main)})})`,
+            ];
+            edits.push({
+              start: d.init.start,
+              end: d.init.end,
+              text: `(Promise.all([${preloads.join(',')}]).catch(()=>{}),${origAwait})`,
+            });
+          }
+        }
+      }
+    }
+
     if (hasReplPair && node.type === 'FunctionDeclaration' && node.async && node.body?.type === 'BlockStatement') {
       for (const stmt of node.body.body) {
         if (stmt.type === 'VariableDeclaration' && stmt.declarations.length >= 2) {
@@ -968,11 +1085,59 @@ export function rewriteParallelReplImports(code) {
           node.init?.type === 'AwaitExpression' &&
           node.init.argument?.type === 'ImportExpression') {
         const origAwait = code.slice(node.init.start, node.init.end);
+        const extraPreloads = [];
+        if (createRootSpec) extraPreloads.push(`import(${JSON.stringify(createRootSpec)}).catch(()=>{})`);
+        if (setupScreensSpec) extraPreloads.push(`import(${JSON.stringify(setupScreensSpec)}).catch(()=>{})`);
+        const preloadExpr = extraPreloads.length > 0
+          ? `(globalThis.__ccPreloadRepl?.(),${extraPreloads.join(',')})`
+          : `globalThis.__ccPreloadRepl?.()`;
         edits.push({
           start: node.init.start,
           end: node.init.end,
-          text: `(globalThis.__ccIsInteractive&&globalThis.__ccPreloadRepl?.(),${origAwait})`,
+          text: `(globalThis.__ccIsInteractive&&${preloadExpr},${origAwait})`,
         });
+      }
+    }
+
+    if (hasDeferTelemetry &&
+        node.type === 'CallExpression' &&
+        node.callee?.type === 'Identifier' &&
+        node.callee.name === 'setImmediate' &&
+        node.arguments?.length === 2 &&
+        node.arguments[0]?.type === 'Identifier' &&
+        node.arguments[1]?.type === 'Identifier') {
+      const fnName = node.arguments[0].name;
+      const argName = node.arguments[1].name;
+      edits.push({
+        start: node.start,
+        end: node.end,
+        text: `setTimeout(${fnName},1500,${argName}).unref?.()`,
+      });
+    }
+
+    if (hasPostRender &&
+        node.type === 'FunctionDeclaration' &&
+        node.async &&
+        node.body?.type === 'BlockStatement' &&
+        code.slice(node.start, node.end).includes('waitUntilExit') &&
+        code.slice(node.start, node.end).includes('runBeforeInteractiveShutdown')) {
+      const stmts = node.body.body;
+      if (stmts.length >= 2 &&
+          stmts[1].type === 'ExpressionStatement' &&
+          stmts[1].expression?.type === 'SequenceExpression' &&
+          stmts[1].expression.expressions.length === 2) {
+        const [e0, e1] = stmts[1].expression.expressions;
+        if (e0.type === 'CallExpression' &&
+            e0.arguments.length === 0 &&
+            e1.type === 'CallExpression' &&
+            e1.arguments.length >= 2) {
+          const call1 = code.slice(e1.start, e1.end);
+          edits.push({
+            start: e1.start,
+            end: e1.end,
+            text: `setImmediate(()=>${call1})`,
+          });
+        }
       }
     }
 
@@ -1076,6 +1241,238 @@ export function rewriteSystemCaCertCache(code) {
       }
     }
   })(ast);
+
+  if (edits.length === 0) return { code, rewritten: 0 };
+  let out = code;
+  for (const e of edits.sort((a, b) => b.start - a.start)) {
+    out = out.slice(0, e.start) + e.text + out.slice(e.end);
+  }
+  return { code: out, rewritten: edits.length };
+}
+
+export function rewriteEnvConfigCache(code) {
+  if (!code.includes('CLAUDE_CODE_LAZY_ENV_GETTERS') || !code.includes('Object.defineProperties')) {
+    return { code, rewritten: 0 };
+  }
+  let ast;
+  try {
+    ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' });
+  } catch {
+    return { code, rewritten: 0 };
+  }
+
+  const edits = [];
+  (function visit(node) {
+    if (node.type === 'FunctionDeclaration' &&
+        node.params.length === 3 &&
+        node.params.every((p) => p.type === 'Identifier') &&
+        node.body?.type === 'BlockStatement' &&
+        node.body.body.length === 2 &&
+        node.body.body[1]?.type === 'ReturnStatement' &&
+        node.body.body[1].argument?.type === 'ArrowFunctionExpression') {
+      const fnText = code.slice(node.start, node.end);
+      const [p0, p1, p2] = node.params.map((p) => p.name);
+      if (fnText.includes(`process.env[${p0}]`) && fnText.includes(`${p1}.parse(`)) {
+        const fnName = node.id.name;
+        edits.push({
+          start: node.start,
+          end: node.end,
+          text: `var __ccEnvGen=1,__ccEnvTick=!1;function ${fnName}(${p0},${p1},${p2}){let E=${p2},r,g=0;return()=>{if(g===__ccEnvGen)return r;if(!__ccEnvTick)__ccEnvTick=!0,queueMicrotask(()=>{__ccEnvTick=!1;__ccEnvGen++});let n=process.env[${p0}];if(n!==E)r=${p1}.parse(n),E=n;return g=__ccEnvGen,r}}`,
+        });
+      }
+    }
+
+    if (node.type === 'FunctionDeclaration' &&
+        node.params.length === 3 &&
+        code.slice(node.start, node.end).includes('Object.defineProperties') &&
+        code.slice(node.start, node.end).includes('delete process.env[')) {
+      (function patchMutators(sub) {
+        if (sub.type === 'Property' &&
+            (sub.key?.name === 'set' || sub.key?.name === 'unset') &&
+            sub.value?.type === 'ObjectExpression') {
+          for (const prop of sub.value.properties) {
+            if (prop.type === 'Property' &&
+                prop.key?.name === 'value' &&
+                prop.value?.type === 'ArrowFunctionExpression' &&
+                prop.value.body?.type === 'BlockStatement') {
+              edits.push({
+                start: prop.value.body.start + 1,
+                end: prop.value.body.start + 1,
+                text: '__ccEnvGen++;',
+              });
+            }
+          }
+        }
+        for (const k of Object.keys(sub)) {
+          const ch = sub[k];
+          if (Array.isArray(ch)) {
+            for (const it of ch) if (it && typeof it.type === 'string') patchMutators(it);
+          } else if (ch && typeof ch.type === 'string') {
+            patchMutators(ch);
+          }
+        }
+      })(node.body);
+    }
+
+    for (const key of Object.keys(node)) {
+      const child = node[key];
+      if (Array.isArray(child)) {
+        for (const item of child) if (item && typeof item.type === 'string') visit(item);
+      } else if (child && typeof child.type === 'string') {
+        visit(child);
+      }
+    }
+  })(ast);
+
+  if (edits.length === 0) return { code, rewritten: 0 };
+  let out = code;
+  for (const e of edits.sort((a, b) => b.start - a.start)) {
+    out = out.slice(0, e.start) + e.text + out.slice(e.end);
+  }
+  return { code: out, rewritten: edits.length };
+}
+
+export function rewriteLazyEngineInitAndModelPicker(code) {
+  const hasEngineInit = code.includes('initializationResult:') && code.includes('unavailableModels:');
+  const hasModelGate = code.includes('model_unavailable_gate') && code.includes('claude-vscode');
+  if (!hasEngineInit && !hasModelGate) {
+    return { code, rewritten: 0 };
+  }
+  let ast;
+  try {
+    ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' });
+  } catch {
+    return { code, rewritten: 0 };
+  }
+
+  const edits = [];
+  if (hasEngineInit) {
+    for (const rawStmt of ast.body) {
+      const stmt = rawStmt.type === 'ExportNamedDeclaration' && rawStmt.declaration
+        ? rawStmt.declaration
+        : rawStmt;
+      if (stmt.type === 'FunctionDeclaration' &&
+          stmt.body?.type === 'BlockStatement' &&
+          stmt.body.body.length > 0 &&
+          code.slice(stmt.start, stmt.end).includes('initializationResult:') &&
+          code.slice(stmt.start, stmt.end).includes('supportedModels:')) {
+        const firstStmt = stmt.body.body[0];
+        if (firstStmt.type === 'VariableDeclaration' && firstStmt.declarations.length >= 1) {
+          const d0 = firstStmt.declarations[0];
+          if (d0.id?.type === 'Identifier' &&
+              d0.init?.type === 'CallExpression' &&
+              code.slice(d0.init.start, d0.init.end).includes('unavailableModels:')) {
+            const initVar = d0.id.name;
+            const initCall = code.slice(d0.init.start, d0.init.end);
+            edits.push({
+              start: d0.start,
+              end: d0.end,
+              text: `__ccLazy_${initVar},${initVar}=()=>__ccLazy_${initVar}??=${initCall}`,
+            });
+            (function replaceRefs(sub) {
+              if (sub.type === 'Property' &&
+                  sub.key?.type === 'Identifier' &&
+                  ['initializationResult', 'accountInfo', 'supportedModels', 'supportedCommands', 'supportedAgents'].includes(sub.key.name)) {
+                (function replaceId(expr) {
+                  if (expr.type === 'Identifier' && expr.name === initVar) {
+                    edits.push({ start: expr.start, end: expr.end, text: `${initVar}()` });
+                    return;
+                  }
+                  if (expr.type === 'MemberExpression' && !expr.computed && expr.object?.type === 'Identifier' && expr.object.name === initVar) {
+                    edits.push({ start: expr.object.start, end: expr.object.end, text: `${initVar}()` });
+                    return;
+                  }
+                  for (const k of Object.keys(expr)) {
+                    const ch = expr[k];
+                    if (Array.isArray(ch)) {
+                      for (const it of ch) if (it && typeof it.type === 'string') replaceId(it);
+                    } else if (ch && typeof ch.type === 'string') {
+                      replaceId(ch);
+                    }
+                  }
+                })(sub.value);
+                return;
+              }
+              for (const k of Object.keys(sub)) {
+                const ch = sub[k];
+                if (Array.isArray(ch)) {
+                  for (const it of ch) if (it && typeof it.type === 'string') replaceRefs(it);
+                } else if (ch && typeof ch.type === 'string') {
+                  replaceRefs(ch);
+                }
+              }
+            })(stmt.body);
+          }
+        }
+      }
+    }
+  }
+
+  if (hasModelGate) {
+    let gateFnName = null;
+    let gateGuardText = null;
+    for (const stmt of ast.body) {
+      if (stmt.type === 'FunctionDeclaration' &&
+          stmt.params.length === 1 &&
+          stmt.body?.type === 'BlockStatement' &&
+          stmt.body.body.length > 0 &&
+          code.slice(stmt.start, stmt.end).includes('model_unavailable_gate')) {
+        const s0 = stmt.body.body[0];
+        if (s0.type === 'IfStatement' && code.slice(s0.start, s0.end).includes('CLAUDE_CODE_ENTRYPOINT')) {
+          gateFnName = stmt.id.name;
+          gateGuardText = code.slice(s0.start, s0.end);
+        }
+      }
+    }
+    for (const stmt of ast.body) {
+      if (gateFnName &&
+          gateGuardText &&
+          stmt.type === 'FunctionDeclaration' &&
+          stmt.params.length === 0 &&
+          stmt.body?.type === 'BlockStatement' &&
+          stmt.body.body.length === 1 &&
+          stmt.body.body[0].type === 'ReturnStatement' &&
+          stmt.body.body[0].argument?.type === 'CallExpression' &&
+          stmt.body.body[0].argument.callee?.name === gateFnName) {
+        edits.push({
+          start: stmt.body.body[0].start,
+          end: stmt.body.body[0].start,
+          text: gateGuardText,
+        });
+      }
+      if (stmt.type === 'FunctionDeclaration' &&
+          stmt.params.length === 1 &&
+          stmt.params[0]?.type === 'Identifier' &&
+          stmt.body?.type === 'BlockStatement' &&
+          stmt.body.body.length === 3 &&
+          code.slice(stmt.start, stmt.end).includes('"fable[1m]"') &&
+          code.slice(stmt.start, stmt.end).includes('new RegExp(')) {
+        const s1 = stmt.body.body[1];
+        const s2 = stmt.body.body[2];
+        if (s1.type === 'VariableDeclaration' &&
+            s2.type === 'ReturnStatement') {
+          const declCode = code.slice(s1.declarations[0].init.start, s1.declarations[0].init.end);
+          const idName = s1.declarations[0].id.name;
+          const retExpr = code.slice(s2.argument.start, s2.argument.end);
+          const newReIdx = retExpr.indexOf('.exec(');
+          if (newReIdx !== -1 && retExpr.startsWith('new RegExp(')) {
+            const reCtor = retExpr.slice(0, newReIdx);
+            const execTail = retExpr.slice(newReIdx);
+            edits.push({
+              start: stmt.start,
+              end: stmt.start,
+              text: `var __ccFableRe,__ccFableModels;`,
+            });
+            edits.push({
+              start: s1.start,
+              end: s2.end,
+              text: `let _m=y4().models;if(_m!==__ccFableModels||!__ccFableRe){let ${idName}=${declCode};__ccFableRe=${reCtor};__ccFableModels=_m}return __ccFableRe${execTail}`,
+            });
+          }
+        }
+      }
+    }
+  }
 
   if (edits.length === 0) return { code, rewritten: 0 };
   let out = code;
@@ -1236,7 +1633,8 @@ export async function patchSplitEsm({ extractDir, entryRel = 'cli.js' }) {
     files: files.length, specifiers: 0, literals: 0,
     metaRequire: 0, rebrand: 0, hoisted: 0, hooksWorkers: 0, hooksWorkerUrls: 0, nodeFetch: 0,
     importMeta: 0, pluginTestMarkers: 0, pluginTests: 0,
-    winWhere: 0, winProcStart: 0, udsSweep: 0, parallelRepl: 0, caCertCache: 0, noopSlowOp: 0, prunedBareImports: 0,
+    winWhere: 0, winProcStart: 0, udsSweep: 0, parallelRepl: 0, caCertCache: 0, noopSlowOp: 0,
+    envConfigCache: 0, lazyEngineModel: 0, prunedBareImports: 0,
     ast: {},
   };
   let leftover = 0;
@@ -1313,6 +1711,14 @@ export async function patchSplitEsm({ extractDir, entryRel = 'cli.js' }) {
     const slowOp = rewriteNoopSlowOpUsing(code);
     code = slowOp.code;
     stats.noopSlowOp += slowOp.rewritten;
+
+    const envCache = rewriteEnvConfigCache(code);
+    code = envCache.code;
+    stats.envConfigCache += envCache.rewritten;
+
+    const lazyEngine = rewriteLazyEngineInitAndModelPicker(code);
+    code = lazyEngine.code;
+    stats.lazyEngineModel += lazyEngine.rewritten;
 
     if (mayContainPatchSite(code)) {
       const result = astPatch(code, 'module');
