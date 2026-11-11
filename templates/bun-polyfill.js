@@ -1415,6 +1415,27 @@ if (typeof globalThis.Bun === "undefined") {
 
   const sleepCell = new Int32Array(new SharedArrayBuffer(4));
 
+  // Native members of Bun.ant, from the cometix-native addon (native/ in
+  // the repository), shipped beside this file in the platform packages it
+  // is built for. Each member it exports replaces a fallback the bundle
+  // would otherwise take — windowsProcessCreationTime spares the
+  // interactive start a ~570ms PowerShell query on Windows (#20). Only the
+  // names listed here are attached; without the addon, or if it fails to
+  // load, they stay absent and the bundle falls back as before.
+  const ANT_NATIVE = ["windowsProcessCreationTime"];
+  function loadAntNative() {
+    const file = path.join(__dirname, `cometix-native.${process.platform}-${process.arch}.node`);
+    if (!fs.existsSync(file)) return {};
+    try {
+      const native = require(file);
+      return Object.fromEntries(ANT_NATIVE
+        .filter((name) => typeof native[name] === "function")
+        .map((name) => [name, native[name]]));
+    } catch {
+      return {};
+    }
+  }
+
   globalThis.Bun = {
     version: "polyfill",
     revision: "polyfill",
@@ -1426,10 +1447,11 @@ if (typeof globalThis.Bun === "undefined") {
     // startup down: the failure escapes process.exit(0) and forceExit turns
     // it into SIGKILL, surfacing as exit code 137 with no output.
     //
-    // The other Bun.ant members stay absent on purpose — getPeerUid/getPeerPid
-    // need SO_PEERCRED and memoryPressureLevel is macOS-native, none of which
-    // JS can stand in for, and every one of those call sites degrades.
-    ant: { CellSegmenter },
+    // The other Bun.ant members are native — getPeerUid/getPeerPid need
+    // SO_PEERCRED, memoryPressureLevel is macOS-native — and JS cannot stand
+    // in for them. Those the addon provides are attached; the rest stay
+    // absent, and every one of those call sites degrades.
+    ant: { CellSegmenter, ...loadAntNative() },
 
     // setJITPolicy is an optional Bun-only tuning hook called off a timer;
     // an empty namespace lets the optional call skip.

@@ -4,3 +4,5 @@ output/
 *.tgz
 .DS_Store
 .tmp/
+native/target/
+native/dist/

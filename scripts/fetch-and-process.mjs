@@ -218,6 +218,7 @@ export async function fetchAndProcess({
   rgVersion = DEFAULT_RG_VERSION,
   platforms = null,
   source = 'cdn',
+  nativeDir = join(SCRIPT_DIR, '..', 'native', 'dist'),
 }) {
   const tmpDir = join(outputDir, '.tmp');
   await mkdir(tmpDir, { recursive: true });
@@ -331,6 +332,7 @@ export async function fetchAndProcess({
       extractDir: ext.extractDir,
       ripgrepDir,
       seccompDir,
+      nativeDir: existsSync(nativeDir) ? nativeDir : null,
       outputDir: join(outputDir, 'packages', platform),
     });
   }
@@ -364,6 +366,7 @@ if (isMain) {
     else if (args[i] === '--rg-version' && args[i+1]) flags.rgVersion = args[++i];
     else if (args[i] === '--platforms' && args[i+1]) flags.platforms = args[++i].split(',');
     else if (args[i] === '--source' && args[i+1]) flags.source = args[++i];
+    else if (args[i] === '--native-dir' && args[i+1]) flags.nativeDir = args[++i];
     else if (args[i] === '--latest') flags.latest = true;
   }
 

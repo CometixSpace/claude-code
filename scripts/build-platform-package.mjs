@@ -61,6 +61,7 @@ export async function buildPlatformPackage({
   extractDir,         // SEA extract dir (native modules, assets, chunks)
   ripgrepDir,         // ripgrep binaries root
   seccompDir,         // seccomp binaries root (or null)
+  nativeDir = null,   // cometix-native builds, cometix-native.<platform>.node (or null)
   outputDir,          // output directory for this platform package
 }) {
   await mkdir(outputDir, { recursive: true });
@@ -165,6 +166,18 @@ export async function buildPlatformPackage({
       await mkdir(dest, { recursive: true });
       await copyFile(src, join(dest, 'apply-seccomp'));
       console.log(`  [OK] vendor/seccomp/${sa}/`);
+    } catch {}
+  }
+
+  // 4b. cometix-native — the Bun.ant members the polyfill attaches. It sits
+  // beside bun-polyfill.mjs, which looks for it by platform and arch; only
+  // split builds load the polyfill as a module next to it. Built for the
+  // platforms whose members it implements, so most packages have none.
+  if (splitEsm && nativeDir) {
+    const name = `cometix-native.${platform}.node`;
+    try {
+      await copyFile(join(nativeDir, name), join(outputDir, name));
+      console.log(`  [OK] ${name}`);
     } catch {}
   }
 

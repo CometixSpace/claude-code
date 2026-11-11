@@ -22,3 +22,18 @@ jobs:
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm ci --prefix patcher --ignore-scripts --no-audit --no-fund
       - run: npm test
+
+  # The release builds the same way; this catches a broken addon on push,
+  # before a release would.
+  native:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Build
+        shell: bash
+        run: bash native/build.sh
+      - name: Check against the OS
+        run: node native/check.cjs

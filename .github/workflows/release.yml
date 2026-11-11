@@ -44,8 +44,36 @@ jobs:
             echo "versions=$VERSIONS" >> "$GITHUB_OUTPUT"
           fi
 
-  build:
+  # cometix-native (native/): the Bun.ant members the polyfill attaches.
+  # Built once per run, on Windows — the only platform whose members it
+  # implements so far — and checked against the OS there before any package
+  # takes it. A missing arm64 build is a warning, not a failure: the polyfill
+  # leaves the members absent and the bundle falls back as it always has.
+  native:
     needs: check
+    if: needs.check.outputs.versions != '[]' && needs.check.outputs.versions != ''
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 'latest'
+
+      - name: Build
+        shell: bash
+        run: bash native/build.sh
+
+      - name: Check against the OS
+        run: node native/check.cjs
+
+      - name: Upload
+        uses: actions/upload-artifact@v6
+        with:
+          name: cometix-native
+          path: native/dist/
+
+  build:
+    needs: [check, native]
     if: needs.check.outputs.versions != '[]' && needs.check.outputs.versions != ''
     runs-on: ubuntu-latest
     strategy:
@@ -58,6 +86,12 @@ jobs:
         with:
           node-version: 'latest'
       - run: npm ci
+
+      - name: Download cometix-native
+        uses: actions/download-artifact@v6
+        with:
+          name: cometix-native
+          path: native/dist/
 
       - name: Build all packages
         run: |
