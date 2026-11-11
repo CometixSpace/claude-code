@@ -11,7 +11,72 @@ if (typeof globalThis.Bun === "undefined") {
   const https = require("https");
   const { Readable } = require("stream");
   const util = require("util");
+  const os = require("os");
+  const path = require("path");
   const { Worker: NodeWorker, isMainThread, parentPort } = require("node:worker_threads");
+
+  // ──────────────────────────────────────────────
+  // Module loading: what the standalone binary gets for free (#20)
+  //
+  // Since 2.1.242 the bundle is ~2400 chunks, and the interactive start
+  // walks a main graph of ~800 of them joined by ~17,000 static imports.
+  // Bun's binary makes that cheap: every chunk carries precompiled JSC
+  // bytecode, and the chunks live in an in-memory filesystem its native
+  // loader resolves against without touching the disk. Node has neither.
+  // It compiles every chunk on every start, and its resolver handles each
+  // import *edge*, not each module — a URL, a filesystem stat and a format
+  // lookup per edge, ~30µs each on macOS and several times that on Windows.
+  //
+  // Measured on 2.1.302 (macOS, importing the main graph): 1438ms as is,
+  // 918ms with the resolver shortcut, 1096ms with the compile cache, 591ms
+  // with both. First frame 3.5s → 1.9s.
+  //
+  // Both are installed here because this module is imported before any
+  // chunk, by cli.js and by the hooks worker alike.
+  // ──────────────────────────────────────────────
+  (function installModuleFastPaths() {
+    const Module = require("module");
+
+    // V8's compile cache stands in for the bytecode: the first start writes
+    // it, later starts skip compilation. Kept under the user's own cache
+    // directory rather than Node's default under os.tmpdir(), which on Linux
+    // is shared between users. NODE_COMPILE_CACHE and
+    // NODE_DISABLE_COMPILE_CACHE still win; Node applies them itself.
+    if (typeof Module.enableCompileCache === "function") {
+      try {
+        const home = os.homedir();
+        const base = process.platform === "win32"
+          ? process.env.LOCALAPPDATA || path.join(home, "AppData", "Local")
+          : process.platform === "darwin"
+            ? path.join(home, "Library", "Caches")
+            : process.env.XDG_CACHE_HOME || path.join(home, ".cache");
+        Module.enableCompileCache(path.join(base, "cometix-claude-code", "node-compile-cache"));
+      } catch {}
+    }
+
+    // A chunk importing a chunk names it by a relative path the bundler
+    // generated, so the target is known without asking the filesystem: it
+    // is a sibling (or, from a nested module, an ancestor's sibling) inside
+    // this package. Only that shape is answered here, and only from parents
+    // inside the package; everything else, and anything that would resolve
+    // outside it, goes to Node's resolver as before. The parent URLs come
+    // from Node's own resolution, already real paths, so the URL built here
+    // is the one Node would have built and module identity is unchanged.
+    if (typeof Module.registerHooks !== "function") return;
+    const { pathToFileURL } = require("url");
+    const root = pathToFileURL(__dirname + path.sep).href;
+    const CHUNK = /^(?:\.\/|(?:\.\.\/)+)chunk-[\w-]+\.js$/;
+    Module.registerHooks({
+      resolve(specifier, context, nextResolve) {
+        const parent = context.parentURL;
+        if (parent !== undefined && parent.startsWith(root) && CHUNK.test(specifier)) {
+          const url = new URL(specifier, parent).href;
+          if (url.startsWith(root)) return { url, format: "module", shortCircuit: true };
+        }
+        return nextResolve(specifier, context);
+      },
+    });
+  })();
 
   // ──────────────────────────────────────────────
   // Web Worker surface for the function-hooks host
