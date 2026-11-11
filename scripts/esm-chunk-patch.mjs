@@ -98,7 +98,9 @@ export function rewriteBunfsPaths(code, prefix) {
 //
 //  Bun's require also honours its text loader: requiring a .md/.txt returns
 //  the file's CONTENT, not a module. v2.1.246 leans on that for the bundled
-//  skills — 164 prompt and template files pulled in at chunk top level:
+//  skills — 164 prompt and template files pulled in at chunk top level. As of
+//  v2.1.302, skills can also embed .mjs helpers as source text; executing one
+//  here can run its CLI entry point and terminate Claude Code.
 //
 //    var a = e("/$bunfs/root/anti-patterns-c1rmzbdk.md");
 //
@@ -132,7 +134,7 @@ export function rewriteBunfsPaths(code, prefix) {
 //  Object.assign keeps require.resolve/cache on the wrapper.
 // ──────────────────────────────────────────────
 
-const TEXT_LOADER_EXT = /\.(?:md|txt)$/;
+const TEXT_LOADER_EXT = /\.(?:md|txt|mjs)$/;
 
 const REQUIRE_SHIM =
   'import{createRequire as __ccMakeRequire}from"module";' +
