@@ -4,10 +4,13 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { buildPolyfillModule } from '../scripts/esm-chunk-patch.mjs';
 
 const run = promisify(execFile);
+// Probes import by URL: on Windows an absolute path is not a specifier.
+const url = (...parts) => pathToFileURL(join(...parts)).href;
 
 // A miniature split package: an entry that imports the shim first, then
 // chunks importing each other the way the bundler writes it. Those are the
@@ -37,11 +40,11 @@ const PROBE = (pkg) => `
 import { registerHooks, createRequire } from 'node:module';
 const seen = [];
 registerHooks({ resolve(s, c, n) { if (s.includes('chunk-')) seen.push(s); return n(s, c); } });
-await import(${JSON.stringify(join(pkg, 'bun-polyfill.mjs'))});
-const a = await import(${JSON.stringify(join(pkg, 'chunk-a.js'))});
-const nested = await import(${JSON.stringify(join(pkg, 'sub', 'chunk-n.js'))});
+await import(${JSON.stringify(url(pkg, 'bun-polyfill.mjs'))});
+const a = await import(${JSON.stringify(url(pkg, 'chunk-a.js'))});
+const nested = await import(${JSON.stringify(url(pkg, 'sub', 'chunk-n.js'))});
 const viaRequire = createRequire(${JSON.stringify(join(pkg, 'chunk-a.js'))})('./chunk-shared.js');
-const outside = await import(${JSON.stringify(join(pkg, '..', 'outside.mjs'))});
+const outside = await import(${JSON.stringify(url(pkg, '..', 'outside.mjs'))});
 console.log(JSON.stringify({
   reachedNode: seen,
   sameInstance: a.tag === nested.tag && a.tag === viaRequire.tag,
@@ -56,9 +59,9 @@ test('chunk imports resolve without Node’s resolver and load once', async (t) 
   await writeFile(probe, PROBE(pkg));
   const { stdout } = await run(process.execPath, [probe], { cwd: dir, env: { ...process.env, NODE_DISABLE_COMPILE_CACHE: '1' } });
   const r = JSON.parse(stdout);
-  // The entry's own specifier is absolute, so it is the only chunk-shaped
-  // one Node still resolves; every relative chunk edge is answered first.
-  assert.deepEqual(r.reachedNode.filter((s) => !s.startsWith('/')), []);
+  // The probe names the chunks by URL, which Node still resolves; every
+  // relative chunk edge between them is answered first.
+  assert.deepEqual(r.reachedNode.filter((s) => s.startsWith('.')), []);
   assert.equal(r.sameInstance, true, 'import, nested import and require see one module');
   assert.equal(r.evals, 1);
   assert.equal(r.outside, 1);
@@ -70,8 +73,8 @@ test('a chunk-shaped specifier from outside the package is left to Node', async 
   // Node's own error rather than a URL that fails later at load.
   await writeFile(join(dir, 'user.mjs'), 'import "./chunk-missing.js";');
   const probe = join(dir, 'probe.mjs');
-  await writeFile(probe, `await import(${JSON.stringify(join(pkg, 'bun-polyfill.mjs'))});
-try { await import(${JSON.stringify(join(dir, 'user.mjs'))}); } catch (e) { console.log(e.code); }`);
+  await writeFile(probe, `await import(${JSON.stringify(url(pkg, 'bun-polyfill.mjs'))});
+try { await import(${JSON.stringify(url(dir, 'user.mjs'))}); } catch (e) { console.log(e.code); }`);
   const { stdout } = await run(process.execPath, [probe], { cwd: dir, env: { ...process.env, NODE_DISABLE_COMPILE_CACHE: '1' } });
   assert.equal(stdout.trim(), 'ERR_MODULE_NOT_FOUND');
 });
@@ -79,7 +82,7 @@ try { await import(${JSON.stringify(join(dir, 'user.mjs'))}); } catch (e) { cons
 test('the compile cache goes to the user’s cache directory', async (t) => {
   const { dir, pkg } = await makePackage(t);
   const probe = join(dir, 'probe.mjs');
-  await writeFile(probe, `await import(${JSON.stringify(join(pkg, 'bun-polyfill.mjs'))});
+  await writeFile(probe, `await import(${JSON.stringify(url(pkg, 'bun-polyfill.mjs'))});
 console.log((await import('node:module')).getCompileCacheDir() ?? 'none');`);
   const home = join(dir, 'home');
   const env = { ...process.env, HOME: home, USERPROFILE: home, LOCALAPPDATA: join(home, 'local'), XDG_CACHE_HOME: join(home, 'xdg') };
