@@ -622,9 +622,10 @@ export function rewritePluginTestEnv(code) {
 const POLYFILL_MODULE = 'bun-polyfill.mjs';
 
 const ESM_PRELUDE = [
-  'import{createRequire as __ccCreateRequire}from"module";',
+  'import{createRequire as __ccCreateRequire,enableCompileCache as __ccEnableCompileCache}from"module";',
   'import{fileURLToPath as __ccFileURLToPath}from"url";',
   'import{dirname as __ccPathDirname}from"path";',
+  'try{__ccEnableCompileCache?.()}catch{}',
   'const require=__ccCreateRequire(import.meta.url);',
   'const __filename=__ccFileURLToPath(import.meta.url);',
   'const __dirname=__ccPathDirname(__filename);',
@@ -644,6 +645,963 @@ const ESM_HELPERS = [
 
 export function buildPolyfillModule(polyfillSource) {
   return ESM_PRELUDE + polyfillSource.replace(/^#![^\n]*\n/, '') + ESM_HELPERS;
+}
+
+// ──────────────────────────────────────────────
+//  E10: Startup performance rewrites (Windows & cross-platform)
+//
+//  1. rewriteWindowsWhere: replace synchronous where.exe execFileSync in $Br
+//     with pure-JS globalThis.__ccFindExecutableCandidates while keeping
+//     upstream's cwd exclusion (pQn), extension check, and host cache.
+//  2. rewriteWindowsProcessCreationTime: use background-warmed self process
+//     start time for process.pid, replace slow WMI Get-CimInstance with
+//     Get-Process, and add 1ms tick tolerance in GEe for WMI/Get-Process
+//     precision compatibility.
+//  3. rewriteUdsSweep: defer stale .tmp session key sweep (Ee) off the
+//     critical path during UDS inbox initialization.
+//  4. rewriteParallelReplImports: load AppRoot and REPL chunks concurrently
+//     with Promise.all instead of sequentially awaiting them.
+//  5. rewriteSystemCaCertCache: use disk-cached X509 validTo timestamps
+//     (__ccGetCertValidTo) when filtering system CA certificates.
+//  6. pruneRedundantBareImports: remove bare `import "./chunk-x.js"` edges
+//     that are already in the transitive closure of earlier imports in the
+//     same module, preserving exact DFS post-order evaluation while cutting
+//     ~84% of redundant ESM linker edges.
+// ──────────────────────────────────────────────
+
+export function rewriteWindowsWhere(code) {
+  if (!code.includes('"where.exe"') || !code.includes('windowsHide')) {
+    return { code, rewritten: 0 };
+  }
+  let ast;
+  try {
+    ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' });
+  } catch {
+    return { code, rewritten: 0 };
+  }
+
+  const edits = [];
+  (function visit(node) {
+    if (node.type === 'VariableDeclarator' && node.init?.type === 'CallExpression') {
+      const filterCall = node.init;
+      const splitCall = filterCall.callee?.type === 'MemberExpression' &&
+        filterCall.callee.property?.name === 'filter'
+        ? filterCall.callee.object : null;
+      const trimCall = splitCall?.type === 'CallExpression' &&
+        splitCall.callee?.type === 'MemberExpression' &&
+        splitCall.callee.property?.name === 'split'
+        ? splitCall.callee.object : null;
+      const execCall = trimCall?.type === 'CallExpression' &&
+        trimCall.callee?.type === 'MemberExpression' &&
+        trimCall.callee.property?.name === 'trim'
+        ? trimCall.callee.object : null;
+      const argArr = execCall?.type === 'CallExpression' ? execCall.arguments?.[1] : null;
+      if (argArr?.type === 'ArrayExpression' &&
+          argArr.elements.length === 1 &&
+          argArr.elements[0] &&
+          code.slice(execCall.start, execCall.end).includes('windowsHide')) {
+        const cmdExpr = code.slice(argArr.elements[0].start, argArr.elements[0].end);
+        const origExpr = code.slice(filterCall.start, filterCall.end);
+        edits.push({
+          start: filterCall.start,
+          end: filterCall.end,
+          text: `(globalThis.__ccFindExecutableCandidates?globalThis.__ccFindExecutableCandidates(${cmdExpr},{includeCwd:!0,firstOnly:!0,throwOnEmpty:!0}):${origExpr})`,
+        });
+      }
+    }
+    for (const key of Object.keys(node)) {
+      const child = node[key];
+      if (Array.isArray(child)) {
+        for (const item of child) if (item && typeof item.type === 'string') visit(item);
+      } else if (child && typeof child.type === 'string') {
+        visit(child);
+      }
+    }
+  })(ast);
+
+  if (edits.length === 0) return { code, rewritten: 0 };
+  let out = code;
+  for (const e of edits.sort((a, b) => b.start - a.start)) {
+    out = out.slice(0, e.start) + e.text + out.slice(e.end);
+  }
+  return { code: out, rewritten: edits.length };
+}
+
+export function rewriteWindowsProcessCreationTime(code) {
+  if (!code.includes('Win32_Process') || !code.includes('CreationDate')) {
+    return { code, rewritten: 0 };
+  }
+  let ast;
+  try {
+    ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' });
+  } catch {
+    return { code, rewritten: 0 };
+  }
+
+  const edits = [];
+  (function visit(node) {
+    if (node.type === 'FunctionDeclaration' &&
+        node.params.length >= 1 &&
+        node.params[0]?.type === 'Identifier' &&
+        node.body?.type === 'BlockStatement' &&
+        code.slice(node.body.start, node.body.end).includes('CreationDate.Ticks')) {
+      const pidParam = node.params[0].name;
+      const envParam = node.params[1]?.type === 'Identifier' ? node.params[1].name : null;
+      const guard = node.async
+        ? `if(${pidParam}===process.pid&&${envParam ? `${envParam}===void 0&&` : ''}globalThis.__ccGetSelfProcStart){let _s=await globalThis.__ccGetSelfProcStart();if(_s)return _s}`
+        : `if(${pidParam}===process.pid&&globalThis.__ccSelfProcStartTicks)return globalThis.__ccSelfProcStartTicks;`;
+      edits.push({ start: node.body.start + 1, end: node.body.start + 1, text: guard });
+    }
+
+    if (node.type === 'TemplateLiteral' && node.expressions.length === 1) {
+      const raw = code.slice(node.start, node.end);
+      if (raw.includes('Get-CimInstance Win32_Process -Filter') && raw.includes('.CreationDate')) {
+        const expr = code.slice(node.expressions[0].start, node.expressions[0].end);
+        const replaced = raw
+          .replace(
+            `(Get-CimInstance Win32_Process -Filter \\\\"ProcessId=\${${expr}}\\\\").CreationDate.Ticks`,
+            `(Get-Process -Id \${${expr}}).StartTime.Ticks`,
+          )
+          .replace(
+            `(Get-CimInstance Win32_Process -Filter "ProcessId=\${${expr}}").CreationDate.Ticks`,
+            `(Get-Process -Id \${${expr}}).StartTime.Ticks`,
+          )
+          .replace(
+            `(Get-CimInstance Win32_Process -Filter "ProcessId=\${${expr}}").CreationDate`,
+            `(Get-Process -Id \${${expr}}).StartTime`,
+          );
+        if (replaced !== raw) {
+          edits.push({ start: node.start, end: node.end, text: replaced });
+        }
+      }
+    }
+
+    if (node.type === 'LogicalExpression' && node.operator === '&&') {
+      const rhs = node.right;
+      if (rhs?.type === 'BinaryExpression' &&
+          rhs.operator === '!==' &&
+          rhs.left?.type === 'BinaryExpression' &&
+          rhs.left.operator === '>' &&
+          rhs.left.right?.type === 'Literal' &&
+          rhs.left.right.value === 300000000000000000 &&
+          rhs.right?.type === 'BinaryExpression' &&
+          rhs.right.operator === '>' &&
+          rhs.right.right?.type === 'Literal' &&
+          rhs.right.right.value === 300000000000000000) {
+        const lhsVar = code.slice(rhs.left.left.start, rhs.left.left.end);
+        const rhsVar = code.slice(rhs.right.left.start, rhs.right.left.end);
+        const origRhs = code.slice(rhs.start, rhs.end);
+        edits.push({
+          start: rhs.start,
+          end: rhs.end,
+          text: `(${origRhs}||Math.abs(${lhsVar}-${rhsVar})<1e4)`,
+        });
+      }
+    }
+
+    for (const key of Object.keys(node)) {
+      const child = node[key];
+      if (Array.isArray(child)) {
+        for (const item of child) if (item && typeof item.type === 'string') visit(item);
+      } else if (child && typeof child.type === 'string') {
+        visit(child);
+      }
+    }
+  })(ast);
+
+  if (edits.length === 0) return { code, rewritten: 0 };
+  let out = code;
+  for (const e of edits.sort((a, b) => b.start - a.start)) {
+    out = out.slice(0, e.start) + e.text + out.slice(e.end);
+  }
+  return { code: out, rewritten: edits.length };
+}
+
+export function rewriteUdsSweep(code) {
+  if (!code.includes('sweepPermitted')) return { code, rewritten: 0 };
+  let ast;
+  try {
+    ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' });
+  } catch {
+    return { code, rewritten: 0 };
+  }
+
+  const edits = [];
+  (function visit(node) {
+    if (node.type === 'FunctionDeclaration' && node.async && node.body?.type === 'BlockStatement') {
+      let sweepVar = null;
+      for (const param of node.params) {
+        if (param.type === 'ObjectPattern') {
+          for (const prop of param.properties) {
+            if (prop.type === 'Property' &&
+                (prop.key.name ?? prop.key.value) === 'sweepPermitted' &&
+                prop.value?.type === 'Identifier') {
+              sweepVar = prop.value.name;
+            }
+          }
+        }
+      }
+      if (sweepVar) {
+        (function findSweepAwait(sub) {
+          if (sub.type === 'AwaitExpression' &&
+              sub.argument?.type === 'CallExpression' &&
+              sub.argument.arguments.length === 2 &&
+              sub.argument.arguments[1]?.type === 'Identifier' &&
+              sub.argument.arguments[1].name === sweepVar) {
+            const callExpr = code.slice(sub.argument.start, sub.argument.end);
+            edits.push({
+              start: sub.start,
+              end: sub.end,
+              text: `(${sweepVar}&&setTimeout(()=>{${callExpr}.catch(()=>{})},2e3).unref?.())`,
+            });
+            return;
+          }
+          for (const k of Object.keys(sub)) {
+            const ch = sub[k];
+            if (Array.isArray(ch)) {
+              for (const it of ch) if (it && typeof it.type === 'string') findSweepAwait(it);
+            } else if (ch && typeof ch.type === 'string') {
+              findSweepAwait(ch);
+            }
+          }
+        })(node.body);
+      }
+    }
+    for (const key of Object.keys(node)) {
+      const child = node[key];
+      if (Array.isArray(child)) {
+        for (const item of child) if (item && typeof item.type === 'string') visit(item);
+      } else if (child && typeof child.type === 'string') {
+        visit(child);
+      }
+    }
+  })(ast);
+
+  if (edits.length === 0) return { code, rewritten: 0 };
+  let out = code;
+  for (const e of edits.sort((a, b) => b.start - a.start)) {
+    out = out.slice(0, e.start) + e.text + out.slice(e.end);
+  }
+  return { code: out, rewritten: edits.length };
+}
+
+function hasObjectPatternKey(pattern, keyName) {
+  return pattern?.type === 'ObjectPattern' &&
+    pattern.properties.some((p) => p.type === 'Property' && (p.key.name ?? p.key.value) === keyName);
+}
+
+export function rewriteParallelReplImports(code) {
+  const hasReplPair = code.includes('AppRoot') && code.includes('REPL');
+  const hasOnboardingCreateRoot = code.includes('createRoot') && code.includes('showSetupScreens');
+  const hasInteractiveSetup = code.includes('startPreviewBrowserDiscovery') && code.includes('action_before_setup');
+  const hasPostRender = code.includes('waitUntilExit') && code.includes('runBeforeInteractiveShutdown');
+  const hasDeferTelemetry = code.includes('maybePrewarmRecallIndex') && code.includes('setImmediate(');
+  const hasCliInteractiveEntry = code.includes('startCapturingEarlyInput') &&
+    code.includes('configureZodForStartup') &&
+    code.includes('cli_before_main_import');
+  if (!hasReplPair && !hasOnboardingCreateRoot && !hasInteractiveSetup &&
+      !hasPostRender && !hasDeferTelemetry && !hasCliInteractiveEntry) {
+    return { code, rewritten: 0 };
+  }
+  let ast;
+  try {
+    ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' });
+  } catch {
+    return { code, rewritten: 0 };
+  }
+
+  let setupScreensSpec = null;
+  let createRootSpec = null;
+  if (hasOnboardingCreateRoot) {
+    (function findSpecs(n) {
+      if (n.type === 'VariableDeclarator' &&
+          n.id?.type === 'Identifier' &&
+          n.init?.type === 'ArrowFunctionExpression' &&
+          n.init.body?.type === 'CallExpression' &&
+          n.init.body.callee?.name === '__ccRequire' &&
+          n.init.body.arguments?.[0]?.type === 'Literal') {
+        const spec = n.init.body.arguments[0].value;
+        if (code.includes(`${n.id.name}().showSetupScreens`)) {
+          setupScreensSpec = spec;
+        }
+      }
+      if (n.type === 'FunctionDeclaration' &&
+          n.async &&
+          code.slice(n.start, n.end).includes('Running showSetupScreens()')) {
+        (function findCreateRoot(sub) {
+          if (sub.type === 'VariableDeclarator' &&
+              hasObjectPatternKey(sub.id, 'createRoot') &&
+              sub.init?.type === 'AwaitExpression' &&
+              sub.init.argument?.type === 'ImportExpression' &&
+              sub.init.argument.source?.type === 'Literal') {
+            createRootSpec = sub.init.argument.source.value;
+          }
+          for (const k of Object.keys(sub)) {
+            const ch = sub[k];
+            if (Array.isArray(ch)) {
+              for (const it of ch) if (it && typeof it.type === 'string') findCreateRoot(it);
+            } else if (ch && typeof ch.type === 'string') {
+              findCreateRoot(ch);
+            }
+          }
+        })(n);
+      }
+      for (const k of Object.keys(n)) {
+        const ch = n[k];
+        if (Array.isArray(ch)) {
+          for (const it of ch) if (it && typeof it.type === 'string') findSpecs(it);
+        } else if (ch && typeof ch.type === 'string') {
+          findSpecs(ch);
+        }
+      }
+    })(ast);
+  }
+
+  let cliSpecs = null;
+  if (hasCliInteractiveEntry) {
+    const found = {};
+    (function scanCliImports(n) {
+      if (n.type === 'VariableDeclarator' &&
+          n.init?.type === 'AwaitExpression' &&
+          n.init.argument?.type === 'ImportExpression' &&
+          n.init.argument.source?.type === 'Literal') {
+        const spec = n.init.argument.source.value;
+        for (const k of ['enableConfigs', 'NON_REPL_SUBCOMMANDS', 'main']) {
+          if (hasObjectPatternKey(n.id, k)) found[k] = spec;
+        }
+      }
+      if (n.type === 'CallExpression' &&
+          n.callee?.type === 'MemberExpression' &&
+          n.callee.property?.name === 'configureZodForStartup' &&
+          n.callee.object?.type === 'AwaitExpression' &&
+          n.callee.object.argument?.type === 'ImportExpression' &&
+          n.callee.object.argument.source?.type === 'Literal') {
+        found.configureZodForStartup = n.callee.object.argument.source.value;
+      }
+      for (const k of Object.keys(n)) {
+        const ch = n[k];
+        if (Array.isArray(ch)) {
+          for (const it of ch) if (it && typeof it.type === 'string') scanCliImports(it);
+        } else if (ch && typeof ch.type === 'string') {
+          scanCliImports(ch);
+        }
+      }
+    })(ast);
+    if (found.enableConfigs && found.configureZodForStartup && found.main) {
+      cliSpecs = found;
+    }
+  }
+
+  const edits = [];
+  (function visit(node) {
+    if (cliSpecs &&
+        node.type === 'IfStatement' &&
+        code.slice(node.test.start, node.test.end).includes('process.stdin.isTTY') &&
+        code.slice(node.test.start, node.test.end).includes('process.stdout.isTTY') &&
+        node.consequent?.type === 'BlockStatement' &&
+        node.consequent.body.length > 0) {
+      const firstStmt = node.consequent.body[0];
+      if (firstStmt.type === 'VariableDeclaration') {
+        for (const d of firstStmt.declarations) {
+          if (hasObjectPatternKey(d.id, 'startCapturingEarlyInput') &&
+              hasObjectPatternKey(d.id, 'consumeEarlyInput') &&
+              d.init?.type === 'AwaitExpression' &&
+              d.init.argument?.type === 'ImportExpression') {
+            const origAwait = code.slice(d.init.start, d.init.end);
+            const preloads = [
+              `import(${JSON.stringify(cliSpecs.enableConfigs)})`,
+              ...(cliSpecs.NON_REPL_SUBCOMMANDS ? [`import(${JSON.stringify(cliSpecs.NON_REPL_SUBCOMMANDS)})`] : []),
+              `import(${JSON.stringify(cliSpecs.configureZodForStartup)}).then((_z)=>{_z.configureZodForStartup();return import(${JSON.stringify(cliSpecs.main)})})`,
+            ];
+            edits.push({
+              start: d.init.start,
+              end: d.init.end,
+              text: `(Promise.all([${preloads.join(',')}]).catch(()=>{}),${origAwait})`,
+            });
+          }
+        }
+      }
+    }
+
+    if (hasReplPair && node.type === 'FunctionDeclaration' && node.async && node.body?.type === 'BlockStatement') {
+      for (const stmt of node.body.body) {
+        if (stmt.type === 'VariableDeclaration' && stmt.declarations.length >= 2) {
+          for (let i = 0; i < stmt.declarations.length - 1; i++) {
+            const d0 = stmt.declarations[i];
+            const d1 = stmt.declarations[i + 1];
+            if (hasObjectPatternKey(d0.id, 'AppRoot') &&
+                hasObjectPatternKey(d1.id, 'REPL') &&
+                d0.init?.type === 'AwaitExpression' &&
+                d0.init.argument?.type === 'ImportExpression' &&
+                d1.init?.type === 'AwaitExpression' &&
+                d1.init.argument?.type === 'ImportExpression') {
+              const id0 = code.slice(d0.id.start, d0.id.end);
+              const id1 = code.slice(d1.id.start, d1.id.end);
+              const imp0 = code.slice(d0.init.argument.start, d0.init.argument.end);
+              const imp1 = code.slice(d1.init.argument.start, d1.init.argument.end);
+              edits.push({
+                start: node.start,
+                end: node.start,
+                text: `globalThis.__ccPreloadRepl??=()=>{let _p=Promise.all([${imp0},${imp1}]);return _p.catch(()=>{}),globalThis.__ccPreloadRepl=()=>_p,_p};`,
+              });
+              edits.push({
+                start: d0.start,
+                end: d1.end,
+                text: `[${id0},${id1}]=await(globalThis.__ccPreloadRepl?globalThis.__ccPreloadRepl():Promise.all([${imp0},${imp1}]))`,
+              });
+              i++;
+            }
+          }
+        }
+      }
+    }
+
+    if (hasOnboardingCreateRoot && node.type === 'VariableDeclaration') {
+      for (const d of node.declarations) {
+        if (hasObjectPatternKey(d.id, 'createRoot') &&
+            d.init?.type === 'AwaitExpression' &&
+            d.init.argument?.type === 'ImportExpression') {
+          const origAwait = code.slice(d.init.start, d.init.end);
+          edits.push({
+            start: d.init.start,
+            end: d.init.end,
+            text: `(globalThis.__ccPreloadRepl?.(),${origAwait})`,
+          });
+        }
+      }
+    }
+
+    if (hasInteractiveSetup) {
+      if (node.type === 'CallExpression' &&
+          node.callee?.type === 'MemberExpression' &&
+          node.callee.property?.name === 'startPreviewBrowserDiscovery') {
+        const origCall = code.slice(node.start, node.end);
+        edits.push({
+          start: node.start,
+          end: node.end,
+          text: `(globalThis.__ccIsInteractive=!0,${origCall})`,
+        });
+      }
+      if (node.type === 'VariableDeclarator' &&
+          hasObjectPatternKey(node.id, 'setup') &&
+          node.init?.type === 'AwaitExpression' &&
+          node.init.argument?.type === 'ImportExpression') {
+        const origAwait = code.slice(node.init.start, node.init.end);
+        const extraPreloads = [];
+        if (createRootSpec) extraPreloads.push(`import(${JSON.stringify(createRootSpec)}).catch(()=>{})`);
+        if (setupScreensSpec) extraPreloads.push(`import(${JSON.stringify(setupScreensSpec)}).catch(()=>{})`);
+        const preloadExpr = extraPreloads.length > 0
+          ? `(globalThis.__ccPreloadRepl?.(),${extraPreloads.join(',')})`
+          : `globalThis.__ccPreloadRepl?.()`;
+        edits.push({
+          start: node.init.start,
+          end: node.init.end,
+          text: `(globalThis.__ccIsInteractive&&${preloadExpr},${origAwait})`,
+        });
+      }
+    }
+
+    if (hasDeferTelemetry &&
+        node.type === 'CallExpression' &&
+        node.callee?.type === 'Identifier' &&
+        node.callee.name === 'setImmediate' &&
+        node.arguments?.length === 2 &&
+        node.arguments[0]?.type === 'Identifier' &&
+        node.arguments[1]?.type === 'Identifier') {
+      const fnName = node.arguments[0].name;
+      const argName = node.arguments[1].name;
+      edits.push({
+        start: node.start,
+        end: node.end,
+        text: `setTimeout(${fnName},1500,${argName}).unref?.()`,
+      });
+    }
+
+    if (hasPostRender &&
+        node.type === 'FunctionDeclaration' &&
+        node.async &&
+        node.body?.type === 'BlockStatement' &&
+        code.slice(node.start, node.end).includes('waitUntilExit') &&
+        code.slice(node.start, node.end).includes('runBeforeInteractiveShutdown')) {
+      const stmts = node.body.body;
+      if (stmts.length >= 2 &&
+          stmts[1].type === 'ExpressionStatement' &&
+          stmts[1].expression?.type === 'SequenceExpression' &&
+          stmts[1].expression.expressions.length === 2) {
+        const [e0, e1] = stmts[1].expression.expressions;
+        if (e0.type === 'CallExpression' &&
+            e0.arguments.length === 0 &&
+            e1.type === 'CallExpression' &&
+            e1.arguments.length >= 2) {
+          const call1 = code.slice(e1.start, e1.end);
+          edits.push({
+            start: e1.start,
+            end: e1.end,
+            text: `setImmediate(()=>${call1})`,
+          });
+        }
+      }
+    }
+
+    for (const key of Object.keys(node)) {
+      const child = node[key];
+      if (Array.isArray(child)) {
+        for (const item of child) if (item && typeof item.type === 'string') visit(item);
+      } else if (child && typeof child.type === 'string') {
+        visit(child);
+      }
+    }
+  })(ast);
+
+  if (edits.length === 0) return { code, rewritten: 0 };
+  let out = code;
+  for (const e of edits.sort((a, b) => b.start - a.start)) {
+    out = out.slice(0, e.start) + e.text + out.slice(e.end);
+  }
+  return { code: out, rewritten: edits.length };
+}
+
+export function rewriteNoopSlowOpUsing(code) {
+  if (!code.includes('using ')) return { code, rewritten: 0 };
+  let ast;
+  try {
+    ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' });
+  } catch {
+    return { code, rewritten: 0 };
+  }
+
+  const edits = [];
+  (function visit(node) {
+    if (node.type === 'VariableDeclaration' &&
+        node.kind === 'using' &&
+        node.declarations.length === 1 &&
+        node.declarations[0].id?.type === 'Identifier' &&
+        node.declarations[0].init?.type === 'TaggedTemplateExpression') {
+      edits.push({ start: node.start, end: node.end, text: '' });
+    }
+    for (const key of Object.keys(node)) {
+      const child = node[key];
+      if (Array.isArray(child)) {
+        for (const item of child) if (item && typeof item.type === 'string') visit(item);
+      } else if (child && typeof child.type === 'string') {
+        visit(child);
+      }
+    }
+  })(ast);
+
+  if (edits.length === 0) return { code, rewritten: 0 };
+  let out = code;
+  for (const e of edits.sort((a, b) => b.start - a.start)) {
+    out = out.slice(0, e.start) + e.text + out.slice(e.end);
+  }
+  return { code: out, rewritten: edits.length };
+}
+
+export function rewriteSystemCaCertCache(code) {
+  if (!code.includes('X509Certificate') || !code.includes('validTo')) {
+    return { code, rewritten: 0 };
+  }
+  let ast;
+  try {
+    ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' });
+  } catch {
+    return { code, rewritten: 0 };
+  }
+
+  const edits = [];
+  (function visit(node) {
+    if (node.type === 'VariableDeclaration' && node.declarations.length === 2) {
+      const [d0, d1] = node.declarations;
+      if (d0.id?.type === 'Identifier' &&
+          d1.id?.type === 'Identifier' &&
+          d0.init?.type === 'NewExpression' &&
+          d0.init.arguments?.length === 1 &&
+          d1.init?.type === 'CallExpression' &&
+          d1.init.callee?.type === 'MemberExpression' &&
+          d1.init.callee.property?.name === 'getTime' &&
+          d1.init.callee.object?.type === 'NewExpression' &&
+          d1.init.callee.object.callee?.name === 'Date' &&
+          d1.init.callee.object.arguments?.[0]?.type === 'MemberExpression' &&
+          d1.init.callee.object.arguments[0].object?.name === d0.id.name &&
+          d1.init.callee.object.arguments[0].property?.name === 'validTo') {
+        const outVar = d1.id.name;
+        const ctorExpr = code.slice(d0.init.callee.start, d0.init.callee.end);
+        const certExpr = code.slice(d0.init.arguments[0].start, d0.init.arguments[0].end);
+        edits.push({
+          start: d0.start,
+          end: d1.end,
+          text: `${outVar}=globalThis.__ccGetCertValidTo?globalThis.__ccGetCertValidTo(${certExpr},${ctorExpr}):new Date(new ${ctorExpr}(${certExpr}).validTo).getTime()`,
+        });
+      }
+    }
+    for (const key of Object.keys(node)) {
+      const child = node[key];
+      if (Array.isArray(child)) {
+        for (const item of child) if (item && typeof item.type === 'string') visit(item);
+      } else if (child && typeof child.type === 'string') {
+        visit(child);
+      }
+    }
+  })(ast);
+
+  if (edits.length === 0) return { code, rewritten: 0 };
+  let out = code;
+  for (const e of edits.sort((a, b) => b.start - a.start)) {
+    out = out.slice(0, e.start) + e.text + out.slice(e.end);
+  }
+  return { code: out, rewritten: edits.length };
+}
+
+export function rewriteEnvConfigCache(code) {
+  if (!code.includes('CLAUDE_CODE_LAZY_ENV_GETTERS') || !code.includes('Object.defineProperties')) {
+    return { code, rewritten: 0 };
+  }
+  let ast;
+  try {
+    ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' });
+  } catch {
+    return { code, rewritten: 0 };
+  }
+
+  const edits = [];
+  (function visit(node) {
+    if (node.type === 'FunctionDeclaration' &&
+        node.params.length === 3 &&
+        node.params.every((p) => p.type === 'Identifier') &&
+        node.body?.type === 'BlockStatement' &&
+        node.body.body.length === 2 &&
+        node.body.body[1]?.type === 'ReturnStatement' &&
+        node.body.body[1].argument?.type === 'ArrowFunctionExpression') {
+      const fnText = code.slice(node.start, node.end);
+      const [p0, p1, p2] = node.params.map((p) => p.name);
+      if (fnText.includes(`process.env[${p0}]`) && fnText.includes(`${p1}.parse(`)) {
+        const fnName = node.id.name;
+        edits.push({
+          start: node.start,
+          end: node.end,
+          text: `var __ccEnvGen=1,__ccEnvTick=!1;function ${fnName}(${p0},${p1},${p2}){let E=${p2},r,g=0;return()=>{if(g===__ccEnvGen)return r;if(!__ccEnvTick)__ccEnvTick=!0,queueMicrotask(()=>{__ccEnvTick=!1;__ccEnvGen++});let n=process.env[${p0}];if(n!==E)r=${p1}.parse(n),E=n;return g=__ccEnvGen,r}}`,
+        });
+      }
+    }
+
+    if (node.type === 'FunctionDeclaration' &&
+        node.params.length === 3 &&
+        code.slice(node.start, node.end).includes('Object.defineProperties') &&
+        code.slice(node.start, node.end).includes('delete process.env[')) {
+      (function patchMutators(sub) {
+        if (sub.type === 'Property' &&
+            (sub.key?.name === 'set' || sub.key?.name === 'unset') &&
+            sub.value?.type === 'ObjectExpression') {
+          for (const prop of sub.value.properties) {
+            if (prop.type === 'Property' &&
+                prop.key?.name === 'value' &&
+                prop.value?.type === 'ArrowFunctionExpression' &&
+                prop.value.body?.type === 'BlockStatement') {
+              edits.push({
+                start: prop.value.body.start + 1,
+                end: prop.value.body.start + 1,
+                text: '__ccEnvGen++;',
+              });
+            }
+          }
+        }
+        for (const k of Object.keys(sub)) {
+          const ch = sub[k];
+          if (Array.isArray(ch)) {
+            for (const it of ch) if (it && typeof it.type === 'string') patchMutators(it);
+          } else if (ch && typeof ch.type === 'string') {
+            patchMutators(ch);
+          }
+        }
+      })(node.body);
+    }
+
+    for (const key of Object.keys(node)) {
+      const child = node[key];
+      if (Array.isArray(child)) {
+        for (const item of child) if (item && typeof item.type === 'string') visit(item);
+      } else if (child && typeof child.type === 'string') {
+        visit(child);
+      }
+    }
+  })(ast);
+
+  if (edits.length === 0) return { code, rewritten: 0 };
+  let out = code;
+  for (const e of edits.sort((a, b) => b.start - a.start)) {
+    out = out.slice(0, e.start) + e.text + out.slice(e.end);
+  }
+  return { code: out, rewritten: edits.length };
+}
+
+export function rewriteLazyEngineInitAndModelPicker(code) {
+  const hasEngineInit = code.includes('initializationResult:') && code.includes('unavailableModels:');
+  const hasModelGate = code.includes('model_unavailable_gate') && code.includes('claude-vscode');
+  if (!hasEngineInit && !hasModelGate) {
+    return { code, rewritten: 0 };
+  }
+  let ast;
+  try {
+    ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' });
+  } catch {
+    return { code, rewritten: 0 };
+  }
+
+  const edits = [];
+  if (hasEngineInit) {
+    for (const rawStmt of ast.body) {
+      const stmt = rawStmt.type === 'ExportNamedDeclaration' && rawStmt.declaration
+        ? rawStmt.declaration
+        : rawStmt;
+      if (stmt.type === 'FunctionDeclaration' &&
+          stmt.body?.type === 'BlockStatement' &&
+          stmt.body.body.length > 0 &&
+          code.slice(stmt.start, stmt.end).includes('initializationResult:') &&
+          code.slice(stmt.start, stmt.end).includes('supportedModels:')) {
+        const firstStmt = stmt.body.body[0];
+        if (firstStmt.type === 'VariableDeclaration' && firstStmt.declarations.length >= 1) {
+          const d0 = firstStmt.declarations[0];
+          if (d0.id?.type === 'Identifier' &&
+              d0.init?.type === 'CallExpression' &&
+              code.slice(d0.init.start, d0.init.end).includes('unavailableModels:')) {
+            const initVar = d0.id.name;
+            const initCall = code.slice(d0.init.start, d0.init.end);
+            edits.push({
+              start: d0.start,
+              end: d0.end,
+              text: `__ccLazy_${initVar},${initVar}=()=>__ccLazy_${initVar}??=${initCall}`,
+            });
+            (function replaceRefs(sub) {
+              if (sub.type === 'Property' &&
+                  sub.key?.type === 'Identifier' &&
+                  ['initializationResult', 'accountInfo', 'supportedModels', 'supportedCommands', 'supportedAgents'].includes(sub.key.name)) {
+                (function replaceId(expr) {
+                  if (expr.type === 'Identifier' && expr.name === initVar) {
+                    edits.push({ start: expr.start, end: expr.end, text: `${initVar}()` });
+                    return;
+                  }
+                  if (expr.type === 'MemberExpression' && !expr.computed && expr.object?.type === 'Identifier' && expr.object.name === initVar) {
+                    edits.push({ start: expr.object.start, end: expr.object.end, text: `${initVar}()` });
+                    return;
+                  }
+                  for (const k of Object.keys(expr)) {
+                    const ch = expr[k];
+                    if (Array.isArray(ch)) {
+                      for (const it of ch) if (it && typeof it.type === 'string') replaceId(it);
+                    } else if (ch && typeof ch.type === 'string') {
+                      replaceId(ch);
+                    }
+                  }
+                })(sub.value);
+                return;
+              }
+              for (const k of Object.keys(sub)) {
+                const ch = sub[k];
+                if (Array.isArray(ch)) {
+                  for (const it of ch) if (it && typeof it.type === 'string') replaceRefs(it);
+                } else if (ch && typeof ch.type === 'string') {
+                  replaceRefs(ch);
+                }
+              }
+            })(stmt.body);
+          }
+        }
+      }
+    }
+  }
+
+  if (hasModelGate) {
+    let gateFnName = null;
+    let gateGuardText = null;
+    for (const stmt of ast.body) {
+      if (stmt.type === 'FunctionDeclaration' &&
+          stmt.params.length === 1 &&
+          stmt.body?.type === 'BlockStatement' &&
+          stmt.body.body.length > 0 &&
+          code.slice(stmt.start, stmt.end).includes('model_unavailable_gate')) {
+        const s0 = stmt.body.body[0];
+        if (s0.type === 'IfStatement' && code.slice(s0.start, s0.end).includes('CLAUDE_CODE_ENTRYPOINT')) {
+          gateFnName = stmt.id.name;
+          gateGuardText = code.slice(s0.start, s0.end);
+        }
+      }
+    }
+    for (const stmt of ast.body) {
+      if (gateFnName &&
+          gateGuardText &&
+          stmt.type === 'FunctionDeclaration' &&
+          stmt.params.length === 0 &&
+          stmt.body?.type === 'BlockStatement' &&
+          stmt.body.body.length === 1 &&
+          stmt.body.body[0].type === 'ReturnStatement' &&
+          stmt.body.body[0].argument?.type === 'CallExpression' &&
+          stmt.body.body[0].argument.callee?.name === gateFnName) {
+        edits.push({
+          start: stmt.body.body[0].start,
+          end: stmt.body.body[0].start,
+          text: gateGuardText,
+        });
+      }
+      if (stmt.type === 'FunctionDeclaration' &&
+          stmt.params.length === 1 &&
+          stmt.params[0]?.type === 'Identifier' &&
+          stmt.body?.type === 'BlockStatement' &&
+          stmt.body.body.length === 3 &&
+          code.slice(stmt.start, stmt.end).includes('"fable[1m]"') &&
+          code.slice(stmt.start, stmt.end).includes('new RegExp(')) {
+        const s1 = stmt.body.body[1];
+        const s2 = stmt.body.body[2];
+        if (s1.type === 'VariableDeclaration' &&
+            s2.type === 'ReturnStatement') {
+          const declCode = code.slice(s1.declarations[0].init.start, s1.declarations[0].init.end);
+          const idName = s1.declarations[0].id.name;
+          const retExpr = code.slice(s2.argument.start, s2.argument.end);
+          const newReIdx = retExpr.indexOf('.exec(');
+          if (newReIdx !== -1 && retExpr.startsWith('new RegExp(')) {
+            const reCtor = retExpr.slice(0, newReIdx);
+            const execTail = retExpr.slice(newReIdx);
+            edits.push({
+              start: stmt.start,
+              end: stmt.start,
+              text: `var __ccFableRe,__ccFableModels;`,
+            });
+            edits.push({
+              start: s1.start,
+              end: s2.end,
+              text: `let _m=y4().models;if(_m!==__ccFableModels||!__ccFableRe){let ${idName}=${declCode};__ccFableRe=${reCtor};__ccFableModels=_m}return __ccFableRe${execTail}`,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  if (edits.length === 0) return { code, rewritten: 0 };
+  let out = code;
+  for (const e of edits.sort((a, b) => b.start - a.start)) {
+    out = out.slice(0, e.start) + e.text + out.slice(e.end);
+  }
+  return { code: out, rewritten: edits.length };
+}
+
+const CHUNK_IMPORT_RE = /import\s*(?:([^;"'()]+)\s*from\s*)?"(\.\/chunk-[^"]+\.js)";[ \t]*\r?\n?/g;
+
+export function pruneRedundantBareImports(fileMap) {
+  const origGraph = new Map();
+  const emptyMods = new Set();
+  for (const [mod, code] of fileMap) {
+    if (code.replace(/\/\/[^\r\n]*|\/\*[\s\S]*?\*\//g, '').trim() === '') {
+      emptyMods.add(mod);
+    }
+    const imports = [];
+    for (const m of code.matchAll(CHUNK_IMPORT_RE)) {
+      imports.push({
+        bare: !m[1],
+        spec: m[2],
+        start: m.index,
+        end: m.index + m[0].length,
+      });
+    }
+    origGraph.set(mod, imports);
+  }
+
+  // Tarjan's strongly connected components so cycles (e.g. from hoisted
+  // top-level requires) are condensed cleanly before computing reachability.
+  let index = 0;
+  const indices = new Map();
+  const lowlink = new Map();
+  const onStack = new Set();
+  const stack = [];
+  const sccOf = new Map();
+  const sccNodes = new Map();
+  let sccCount = 0;
+
+  function strongconnect(v) {
+    indices.set(v, index);
+    lowlink.set(v, index);
+    index++;
+    stack.push(v);
+    onStack.add(v);
+    for (const imp of (origGraph.get(v) || [])) {
+      const w = imp.spec;
+      if (!origGraph.has(w)) continue;
+      if (!indices.has(w)) {
+        strongconnect(w);
+        lowlink.set(v, Math.min(lowlink.get(v), lowlink.get(w)));
+      } else if (onStack.has(w)) {
+        lowlink.set(v, Math.min(lowlink.get(v), indices.get(w)));
+      }
+    }
+    if (lowlink.get(v) === indices.get(v)) {
+      const scc = [];
+      let w;
+      do {
+        w = stack.pop();
+        onStack.delete(w);
+        scc.push(w);
+        sccOf.set(w, sccCount);
+      } while (w !== v);
+      sccNodes.set(sccCount, scc);
+      sccCount++;
+    }
+  }
+
+  for (const mod of origGraph.keys()) {
+    if (!indices.has(mod)) strongconnect(mod);
+  }
+
+  const sccClosureMemo = new Map();
+  const toDropByMod = new Map();
+
+  function getSccClosure(id) {
+    if (sccClosureMemo.has(id)) return sccClosureMemo.get(id);
+    const nodes = sccNodes.get(id);
+    const covered = new Set(nodes);
+    sccClosureMemo.set(id, covered);
+
+    if (nodes.length === 1) {
+      const mod = nodes[0];
+      const drops = [];
+      for (const imp of (origGraph.get(mod) || [])) {
+        if (imp.bare && (covered.has(imp.spec) || emptyMods.has(imp.spec))) {
+          drops.push(imp);
+          continue;
+        }
+        const childScc = sccOf.get(imp.spec);
+        if (childScc !== undefined) {
+          for (const c of getSccClosure(childScc)) covered.add(c);
+        }
+      }
+      if (drops.length > 0) toDropByMod.set(mod, drops);
+    } else {
+      for (const mod of nodes) {
+        for (const imp of (origGraph.get(mod) || [])) {
+          const childScc = sccOf.get(imp.spec);
+          if (childScc !== undefined && childScc !== id) {
+            for (const c of getSccClosure(childScc)) covered.add(c);
+          }
+        }
+      }
+    }
+    return covered;
+  }
+
+  for (let i = 0; i < sccCount; i++) getSccClosure(i);
+
+  let prunedImports = 0;
+  let touchedFiles = 0;
+  for (const [mod, drops] of toDropByMod) {
+    let code = fileMap.get(mod);
+    for (let i = drops.length - 1; i >= 0; i--) {
+      const d = drops[i];
+      code = code.slice(0, d.start) + code.slice(d.end);
+    }
+    fileMap.set(mod, code);
+    prunedImports += drops.length;
+    touchedFiles++;
+  }
+
+  return { prunedImports, touchedFiles };
 }
 
 // ──────────────────────────────────────────────
@@ -676,10 +1634,15 @@ export async function patchSplitEsm({ extractDir, entryRel = 'cli.js' }) {
   const stats = {
     files: files.length, specifiers: 0, literals: 0,
     metaRequire: 0, rebrand: 0, hoisted: 0, hooksWorkers: 0, hooksWorkerUrls: 0, nodeFetch: 0,
-    importMeta: 0, pluginTestMarkers: 0, pluginTests: 0, ast: {},
+    importMeta: 0, pluginTestMarkers: 0, pluginTests: 0,
+    winWhere: 0, winProcStart: 0, udsSweep: 0, parallelRepl: 0, caCertCache: 0, noopSlowOp: 0,
+    envConfigCache: 0, lazyEngineModel: 0, prunedBareImports: 0,
+    ast: {},
   };
   let leftover = 0;
   const bunOnly = [];
+  const fileMap = new Map();
+  const beforeMap = new Map();
 
   // Locate every patch site before touching anything, so a required one that
   // moved or disappeared surfaces as a report line instead of a zero counter.
@@ -691,6 +1654,8 @@ export async function patchSplitEsm({ extractDir, entryRel = 'cli.js' }) {
     const path = join(extractDir, rel);
     const before = await readFile(path, 'utf8');
     const prefix = prefixFor(dirname(rel));
+    const normRel = './' + rel.split(sep).join('/');
+    beforeMap.set(normRel, { path, before });
 
     // Hoisting reads the BunFS specifiers, so it has to run before they are
     // rewritten — and before E3, which turns import.meta.require into a call
@@ -725,6 +1690,38 @@ export async function patchSplitEsm({ extractDir, entryRel = 'cli.js' }) {
     code = metaProps.code;
     stats.importMeta += metaProps.rewritten;
 
+    const winWhere = rewriteWindowsWhere(code);
+    code = winWhere.code;
+    stats.winWhere += winWhere.rewritten;
+
+    const winProc = rewriteWindowsProcessCreationTime(code);
+    code = winProc.code;
+    stats.winProcStart += winProc.rewritten;
+
+    const udsSweep = rewriteUdsSweep(code);
+    code = udsSweep.code;
+    stats.udsSweep += udsSweep.rewritten;
+
+    const parRepl = rewriteParallelReplImports(code);
+    code = parRepl.code;
+    stats.parallelRepl += parRepl.rewritten;
+
+    const caCache = rewriteSystemCaCertCache(code);
+    code = caCache.code;
+    stats.caCertCache += caCache.rewritten;
+
+    const slowOp = rewriteNoopSlowOpUsing(code);
+    code = slowOp.code;
+    stats.noopSlowOp += slowOp.rewritten;
+
+    const envCache = rewriteEnvConfigCache(code);
+    code = envCache.code;
+    stats.envConfigCache += envCache.rewritten;
+
+    const lazyEngine = rewriteLazyEngineInitAndModelPicker(code);
+    code = lazyEngine.code;
+    stats.lazyEngineModel += lazyEngine.rewritten;
+
     if (mayContainPatchSite(code)) {
       const result = astPatch(code, 'module');
       if (result.replacementCount > 0) {
@@ -750,9 +1747,17 @@ export async function patchSplitEsm({ extractDir, entryRel = 'cli.js' }) {
       stats.rebrand++;
     }
 
-    if (code !== before) await writeFile(path, code);
+    fileMap.set(normRel, code);
     leftover += (code.match(new RegExp(ROOT_ALT, 'g')) || []).length;
     for (const name of bunOnlyImportMeta(code)) bunOnly.push(`${rel}: import.meta.${name}`);
+  }
+
+  const pruned = pruneRedundantBareImports(fileMap);
+  stats.prunedBareImports = pruned.prunedImports;
+
+  for (const [normRel, code] of fileMap) {
+    const info = beforeMap.get(normRel);
+    if (info && code !== info.before) await writeFile(info.path, code);
   }
 
   // Checked on what is about to ship, after every rewrite. An import.meta

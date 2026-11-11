@@ -285,7 +285,8 @@ export async function fetchAndProcess({
         process.exit(1);
       }
       console.log(`  ✓ ${platform} — ${st.specifiers.toLocaleString()} specifiers, ` +
-        `${st.literals} runtime paths, ${st.nodeFetch} node-fetch, ${st.importMeta} import.meta, ${st.leftover} leftover`);
+        `${st.literals} runtime paths, ${st.nodeFetch} node-fetch, ${st.importMeta} import.meta, ` +
+        `${st.prunedBareImports.toLocaleString()} pruned bare imports, ${st.leftover} leftover`);
       extractions[platform] = { extractDir, entryRel, binPath };
     } else {
       // Single-CJS: one file in, one patched file out.

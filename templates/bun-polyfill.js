@@ -3,15 +3,287 @@
 // Provides compatible implementations of Bun-specific APIs used by Claude Code 2.1.200+
 
 if (typeof globalThis.Bun === "undefined") {
+  // Enable V8 bytecode compile cache as early as possible so dynamically
+  // imported split-ESM chunks (chunk-14fc6qh5.js, AppRoot, REPL, etc.) are
+  // cached on disk across invocations without requiring NODE_COMPILE_CACHE.
+  try { require("module").enableCompileCache?.(); } catch {}
+
+  // Upstream's env config module supports a lazy Proxy mode behind this flag,
+  // avoiding ~500 eager Object.defineProperty calls during module evaluation.
+  process.env.CLAUDE_CODE_LAZY_ENV_GETTERS ??= "1";
+
   const crypto = require("crypto");
   const cp = require("child_process");
   const fs = require("fs");
   const net = require("net");
+  const os = require("os");
+  const path = require("path");
   const http = require("http");
   const https = require("https");
   const { Readable } = require("stream");
   const util = require("util");
   const { Worker: NodeWorker, isMainThread, parentPort } = require("node:worker_threads");
+
+  // ──────────────────────────────────────────────
+  // Windows startup helpers:
+  //   1. Pre-warm self process creation time in the background during Stage 1
+  //      so Stage 5 UDS inbox / peer session checks resolve in 0ms instead of
+  //      blocking for ~610-1,000ms on a cold PowerShell WMI query.
+  //   2. Disk-backed X509 validTo timestamp cache so system CA store filtering
+  //      does not re-instantiate ~150 X509Certificate objects synchronously.
+  //   3. Pure-JS executable candidate lookup (__ccFindExecutableCandidates)
+  //      used by both Bun.which and the patched Windows $Br lookup.
+  // ──────────────────────────────────────────────
+  if (process.platform === "win32" && isMainThread) {
+    const argv2 = process.argv[2] || "";
+    const isFastExit = argv2 === "--version" || argv2 === "-v" || argv2 === "-V" ||
+      argv2 === "--help" || argv2 === "-h";
+    if (!isFastExit) {
+      let selfProcChild = null;
+      const selfProcPromise = new Promise((resolve) => {
+        try {
+          selfProcChild = cp.execFile(
+            "powershell.exe",
+            ["-NoProfile", "-Command", `(Get-Process -Id ${process.pid}).StartTime.Ticks`],
+            { timeout: 5000, windowsHide: true },
+            (err, stdout) => {
+              selfProcChild = null;
+              const val = !err && stdout ? String(stdout).trim() || undefined : undefined;
+              if (val) globalThis.__ccSelfProcStartTicks = val;
+              resolve(val);
+            }
+          );
+          selfProcChild.unref?.();
+        } catch {
+          resolve(undefined);
+        }
+      });
+      globalThis.__ccGetSelfProcStart = () => {
+        selfProcChild?.ref?.();
+        return selfProcPromise;
+      };
+    }
+  }
+
+  let _caCache = null;
+  let _caCacheDirty = false;
+  let _caCacheFlushScheduled = false;
+  const _caCachePath = path.join(os.tmpdir(), "claude-code-ca-validto-v1.json");
+
+  function _fastCertKey(str) {
+    const s = String(str);
+    const len = s.length;
+    let h1 = 0x811c9dc5;
+    let h2 = 0x9e3779b9;
+    const step = len > 512 ? 4 : 1;
+    for (let i = 0; i < len; i += step) {
+      const c = s.charCodeAt(i);
+      h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
+      h2 = Math.imul(h2 ^ c, 0x85ebca6b) >>> 0;
+    }
+    return `${h1.toString(36)}_${h2.toString(36)}_${len.toString(36)}`;
+  }
+
+  globalThis.__ccGetCertValidTo = function __ccGetCertValidTo(certPem, X509Ctor) {
+    if (_caCache === null) {
+      try {
+        const raw = fs.readFileSync(_caCachePath, "utf8");
+        const parsed = JSON.parse(raw);
+        _caCache = parsed && typeof parsed === "object" ? parsed : {};
+      } catch {
+        _caCache = {};
+      }
+    }
+    const key = _fastCertKey(certPem);
+    const cached = _caCache[key];
+    if (typeof cached === "number") {
+      return cached === -1 ? NaN : cached;
+    }
+    let ms = NaN;
+    try {
+      const cert = new X509Ctor(certPem);
+      ms = new Date(cert.validTo).getTime();
+    } catch {}
+    _caCache[key] = Number.isNaN(ms) ? -1 : ms;
+    _caCacheDirty = true;
+    if (!_caCacheFlushScheduled) {
+      _caCacheFlushScheduled = true;
+      setImmediate(() => {
+        _caCacheFlushScheduled = false;
+        if (!_caCacheDirty || !_caCache) return;
+        _caCacheDirty = false;
+        try {
+          const keys = Object.keys(_caCache);
+          if (keys.length > 2048) {
+            for (let i = 0; i < keys.length - 1024; i++) delete _caCache[keys[i]];
+          }
+          fs.writeFileSync(_caCachePath, JSON.stringify(_caCache));
+        } catch {}
+      }).unref?.();
+    }
+    return ms;
+  };
+
+  try {
+    const _tls = require("tls");
+    const _origGetCACerts = _tls.getCACertificates;
+    if (typeof _origGetCACerts === "function") {
+      const _sysCaCachePath = path.join(os.tmpdir(), "claude-code-system-ca-v1.json");
+      let _sysCaMem = null;
+      _tls.getCACertificates = function getCACertificates(type) {
+        if (type === "system") {
+          if (_sysCaMem) return _sysCaMem;
+          try {
+            const st = fs.statSync(_sysCaCachePath, { throwIfNoEntry: false });
+            if (st && Date.now() - st.mtimeMs < 86_400_000) {
+              const parsed = JSON.parse(fs.readFileSync(_sysCaCachePath, "utf8"));
+              if (Array.isArray(parsed)) {
+                _sysCaMem = parsed;
+                return parsed;
+              }
+            }
+          } catch {}
+          const certs = _origGetCACerts.call(this, type);
+          if (Array.isArray(certs)) {
+            _sysCaMem = certs;
+            setImmediate(() => {
+              try { fs.writeFileSync(_sysCaCachePath, JSON.stringify(certs)); } catch {}
+            }).unref?.();
+          }
+          return certs;
+        }
+        return _origGetCACerts.apply(this, arguments);
+      };
+    }
+  } catch {}
+
+  function isExecutableFile(filePath, isWin) {
+    try {
+      const st = fs.statSync(filePath, { throwIfNoEntry: false });
+      if (!st || !st.isFile()) return false;
+      if (!isWin) {
+        fs.accessSync(filePath, fs.constants.X_OK);
+        if (process.getuid?.() === 0 && (st.mode & 0o111) === 0) return false;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function findExecutableCandidates(cmd, opts = {}) {
+    if (!cmd || typeof cmd !== "string") {
+      if (opts?.throwOnEmpty) {
+        const err = new Error("not found");
+        err.status = 1;
+        throw err;
+      }
+      return [];
+    }
+    const cleanCmd = cmd.trim().replace(/^"+|"+$/g, "");
+    if (!cleanCmd) {
+      if (opts?.throwOnEmpty) {
+        const err = new Error("not found");
+        err.status = 1;
+        throw err;
+      }
+      return [];
+    }
+    const isWin = opts?.platform ? opts.platform === "win32" : process.platform === "win32";
+    const pathMod = process.platform === "win32" ? path.win32 : path;
+    const pathDelim = isWin ? ";" : path.delimiter;
+    const cwd = opts?.cwd || process.cwd();
+    const pathEnv = opts?.PATH !== undefined
+      ? String(opts.PATH ?? "")
+      : String(process.env.PATH ?? (isWin ? process.env.Path : "") ?? "");
+    const pathextRaw = opts?.PATHEXT !== undefined
+      ? String(opts.PATHEXT ?? "")
+      : String(process.env.PATHEXT ?? (isWin ? process.env.Pathext : "") ?? ".COM;.EXE;.BAT;.CMD");
+    const exts = isWin
+      ? pathextRaw
+          .split(";")
+          .map((x) => x.trim().toLowerCase())
+          .filter(Boolean)
+          .map((x) => (x.startsWith(".") ? x : "." + x))
+      : [""];
+    const firstOnly = Boolean(opts?.firstOnly);
+    const results = [];
+    const seen = new Set();
+
+    const pushIfExec = (candidate) => {
+      const normKey = isWin ? candidate.toLowerCase() : candidate;
+      if (seen.has(normKey)) return false;
+      if (isExecutableFile(candidate, isWin)) {
+        seen.add(normKey);
+        results.push(candidate);
+        return true;
+      }
+      return false;
+    };
+
+    const hasSep = cleanCmd.includes("/") || (isWin && cleanCmd.includes("\\"));
+    if (hasSep) {
+      const base = pathMod.isAbsolute(cleanCmd) ? cleanCmd : pathMod.resolve(cwd, cleanCmd);
+      if (isWin) {
+        const lower = cleanCmd.toLowerCase();
+        const dotIdx = lower.lastIndexOf(".");
+        const cmdExt = dotIdx > 0 ? lower.slice(dotIdx) : "";
+        const names = cmdExt && exts.includes(cmdExt)
+          ? [base, ...exts.map((e) => base + e)]
+          : [...exts.map((e) => base + e), base];
+        for (const cand of names) {
+          if (pushIfExec(cand) && firstOnly) return results;
+        }
+      } else {
+        pushIfExec(base);
+      }
+    } else {
+      const rawDirs = pathEnv ? pathEnv.split(pathDelim) : [];
+      const includeCwd = Boolean(opts?.includeCwd);
+      if (includeCwd) rawDirs.unshift(cwd);
+      const absCwd = pathMod.resolve(cwd);
+      const normCwd = isWin ? absCwd.toLowerCase() : absCwd;
+      const lower = cleanCmd.toLowerCase();
+      const dotIdx = lower.lastIndexOf(".");
+      const cmdExt = dotIdx > 0 ? lower.slice(dotIdx) : "";
+      const hasKnownWinExt = isWin && Boolean(cmdExt && exts.includes(cmdExt));
+      const seenDirs = new Set();
+
+      for (const rawDir of rawDirs) {
+        const dir = isWin ? rawDir.trim().replace(/^"+|"+$/g, "") : rawDir.trim();
+        if (!dir) continue;
+        const absDir = pathMod.isAbsolute(dir) ? pathMod.normalize(dir) : pathMod.resolve(cwd, dir);
+        const normDir = isWin ? absDir.toLowerCase() : absDir;
+        if (seenDirs.has(normDir)) continue;
+        seenDirs.add(normDir);
+        const isCwdDir = includeCwd && normDir === normCwd;
+        const shouldStopOnHit = firstOnly && !isCwdDir;
+        if (isWin) {
+          if (hasKnownWinExt) {
+            if (pushIfExec(pathMod.join(absDir, cleanCmd)) && shouldStopOnHit) return results;
+          } else {
+            for (const ext of exts) {
+              if (pushIfExec(pathMod.join(absDir, cleanCmd + ext))) {
+                if (shouldStopOnHit) return results;
+                if (firstOnly && isCwdDir) break;
+              }
+            }
+          }
+        } else {
+          if (pushIfExec(pathMod.join(absDir, cleanCmd)) && shouldStopOnHit) return results;
+        }
+      }
+    }
+
+    if (results.length === 0 && opts?.throwOnEmpty) {
+      const err = new Error("not found");
+      err.status = 1;
+      throw err;
+    }
+    return results;
+  }
+
+  globalThis.__ccFindExecutableCandidates = findExecutableCandidates;
 
   // ──────────────────────────────────────────────
   // Web Worker surface for the function-hooks host
@@ -340,9 +612,16 @@ if (typeof globalThis.Bun === "undefined") {
   };
   bunHash.toString = () => "function hash() { [native code] }";
 
-  // Load Anthropic-compatible ink implementations (bundled from source)
-  let _inkCompat = null;
-  try { _inkCompat = require("./bun-ink-compat.cjs"); } catch {}
+  // Load Anthropic-compatible ink implementations lazily on first call
+  let _inkCompat;
+  function getInkCompat() {
+    if (_inkCompat === undefined) {
+      try { _inkCompat = require("./bun-ink-compat.cjs"); } catch { _inkCompat = null; }
+    }
+    return _inkCompat;
+  }
+
+  const _whichCache = new Map();
 
   const ANSI_RE = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
 
@@ -1390,18 +1669,21 @@ if (typeof globalThis.Bun === "undefined") {
     deepEquals,
 
     stripANSI: (str) => {
-      if (_inkCompat?.stripANSI) return _inkCompat.stripANSI(str);
+      const ink = getInkCompat();
+      if (ink?.stripANSI) return ink.stripANSI(str);
       return typeof str === "string" ? str.replace(ANSI_RE, "") : str;
     },
 
     stringWidth: (str, opts) => {
-      if (_inkCompat?.stringWidth) return _inkCompat.stringWidth(str);
+      const ink = getInkCompat();
+      if (ink?.stringWidth) return ink.stringWidth(str);
       if (!str) return 0;
       return str.replace(ANSI_RE, "").length;
     },
 
     wrapAnsi: (str, cols, opts) => {
-      if (_inkCompat?.wrapAnsi) return _inkCompat.wrapAnsi(str, cols, opts);
+      const ink = getInkCompat();
+      if (ink?.wrapAnsi) return ink.wrapAnsi(str, cols, opts);
       if (!str || cols <= 0) return str;
       return str;
     },
@@ -1410,7 +1692,8 @@ if (typeof globalThis.Bun === "undefined") {
     // drops the frame and panels sit on stale content — the task output pane
     // showing "Loading output…" indefinitely.
     sliceAnsi: (str, start, end) => {
-      if (_inkCompat?.sliceAnsi) return _inkCompat.sliceAnsi(str, start, end);
+      const ink = getInkCompat();
+      if (ink?.sliceAnsi) return ink.sliceAnsi(str, start, end);
       return typeof str === "string" ? str.slice(start, end) : str;
     },
 
@@ -1446,7 +1729,8 @@ if (typeof globalThis.Bun === "undefined") {
 
     JSONL: { parseChunk: null },
 
-    which: (cmd) => {
+    which: (cmd, opts) => {
+      if (!cmd || typeof cmd !== "string") return null;
       // Vendor directory lookup for bundled binaries.
       // Restores the semantics of USE_BUILTIN_RIPGREP:
       //   unset/1/true (default) → prefer vendor rg, fall back to system PATH
@@ -1454,13 +1738,12 @@ if (typeof globalThis.Bun === "undefined") {
       // In Bun SEA mode, builtin rg lived inside the multicall binary via
       // Bun.isStandaloneExecutable. After SEA extraction for Node.js, the
       // embedded branch never fires, so vendor lookup happens here instead.
-      if (cmd === "rg" || cmd === "rg.exe") {
+      if ((cmd === "rg" || cmd === "rg.exe") && opts?.PATH === undefined) {
         const useBuiltin = process.env.USE_BUILTIN_RIPGREP;
         const disabled = useBuiltin !== undefined &&
           ["0", "false", "no", "off"].includes(String(useBuiltin).toLowerCase().trim());
         if (!disabled) {
           try {
-            const path = require("path");
             const archDir = process.arch + "-" + process.platform;
             const bin = process.platform === "win32" ? "rg.exe" : "rg";
             const vendorPath = path.join(__dirname, "vendor", "ripgrep", archDir, bin);
@@ -1468,13 +1751,31 @@ if (typeof globalThis.Bun === "undefined") {
           } catch {}
         }
       }
-      // System PATH lookup (execFileSync avoids shell injection vs execSync)
-      try {
-        const whichCmd = process.platform === "win32" ? "where" : "which";
-        return cp.execFileSync(whichCmd, [cmd],
-          { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"], timeout: 5000 }
-        ).trim().split("\n")[0] || null;
-      } catch { return null; }
+      // Pure-JS PATH lookup with in-memory memoization (zero subprocess spawns)
+      const isWin = process.platform === "win32";
+      const pathEnv = opts?.PATH !== undefined
+        ? String(opts.PATH ?? "")
+        : String(process.env.PATH ?? (isWin ? process.env.Path : "") ?? "");
+      const pathextEnv = isWin
+        ? String(opts?.PATHEXT ?? process.env.PATHEXT ?? process.env.Pathext ?? ".COM;.EXE;.BAT;.CMD")
+        : "";
+      const cwd = opts?.cwd || process.cwd();
+      const cacheKey = `${cmd}\0${pathEnv}\0${pathextEnv}\0${cwd}`;
+      if (_whichCache.has(cacheKey)) {
+        const cached = _whichCache.get(cacheKey);
+        if (cached === null || isExecutableFile(cached, isWin)) return cached;
+        _whichCache.delete(cacheKey);
+      }
+      const hits = findExecutableCandidates(cmd, {
+        PATH: pathEnv,
+        PATHEXT: pathextEnv,
+        cwd,
+        firstOnly: true,
+      });
+      const resolved = hits[0] || null;
+      if (_whichCache.size >= 512) _whichCache.clear();
+      _whichCache.set(cacheKey, resolved);
+      return resolved;
     },
 
     spawn: bunSpawn,

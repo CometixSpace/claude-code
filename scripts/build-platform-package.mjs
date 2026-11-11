@@ -173,6 +173,7 @@ export async function buildPlatformPackage({
     name: `@cometix/claude-code-${platform}`,
     version,
     description: `Claude Code Node.js restored — ${platform}`,
+    ...(splitEsm ? { type: 'module' } : {}),
     os: [os],
     cpu: [cpu],
     files: ['cli.js', 'vendor/'],
