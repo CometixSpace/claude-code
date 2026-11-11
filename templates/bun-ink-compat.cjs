@@ -1061,8 +1061,14 @@ var exec = (string, columns, options = {}) => {
   }
   return returnValue;
 };
+// No .normalize() here, unlike npm wrap-ansi: Bun's native wrapAnsi leaves
+// code points as they are, and the bundle depends on it. Its wrapper swaps
+// each wide multi-unit grapheme for U+2FA1D before wrapping and restores it
+// by matching U+2FA1D afterwards. NFC decomposes that code point to U+2A600,
+// so the restore missed and keycaps, flags, ZWJ and VS16 emoji streamed as
+// 𪘀 (#18).
 function wrapAnsi(string, columns, options) {
-  return String(string).normalize().replaceAll("\r\n", "\n").split("\n").map((line) => exec(expandTabs(line), columns, options)).join("\n");
+  return String(string).replaceAll("\r\n", "\n").split("\n").map((line) => exec(expandTabs(line), columns, options)).join("\n");
 }
 
 // bun-compat-final.ts
