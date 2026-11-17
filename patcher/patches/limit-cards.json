@@ -1,0 +1,210 @@
+{
+  "id": "limit-cards",
+  "title": "Add /limit-cards: list your usage-limit resets without using one",
+  "description": "Claude Code can use a usage-limit reset (/limit-reset) but has no way to just look at them: /limit-reset goes straight to its confirm dialog when one is usable, and otherwise shows a single line. This adds /limit-cards, which sends the same read /limit-reset sends first — GET /api/oauth/usage?cedar_ember=1&skip_spend=1, through the host's own usage reader — and lists every reset with its id, how many are left, its validity window, which limits it clears and why it can't be used. `/limit-cards json` prints the raw cedar_ember and juniper_tide blocks. It never calls reset_rate_limits.",
+  "risk": "low",
+  "versions": ">=2.1.280",
+  "stages": [
+    {
+      "id": "find-reader",
+      "sites": [
+        {
+          "id": "status-fetch",
+          "description": "The cedar-ember status fetch: the function /limit-reset uses to ask whether a reset is on offer. Found by its own failure log line rather than its shape.",
+          "marker": "[cedar-ember] status fetch failed",
+          "match": {
+            "node": "FunctionDeclaration",
+            "contains": "[cedar-ember] status fetch failed"
+          },
+          "expect": "required"
+        },
+        {
+          "id": "reader-call",
+          "description": "Inside the status fetch, the call to the usage reader — the one call there that passes {read: …}. Without `within`, the first such call in the chunk is the status fetch being called by its own caller.",
+          "within": "status-fetch",
+          "marker": "[cedar-ember] status fetch failed",
+          "match": {
+            "node": "CallExpression",
+            "where": {
+              "callee.type": "Identifier",
+              "arguments.1.properties.[].key.name": "read"
+            }
+          },
+          "capture": {
+            "localReader": "callee.name"
+          },
+          "expect": "required"
+        },
+        {
+          "id": "reader-import",
+          "description": "The import that brings the reader into the status fetch's chunk. Its source is the reader's chunk, named relative to the directory every chunk shares, so the same path works from the chunk the command lands in.",
+          "sameFileAs": "status-fetch",
+          "marker": "[cedar-ember] status fetch failed",
+          "match": {
+            "node": "ImportDeclaration",
+            "has": {
+              "node": "ImportSpecifier",
+              "where": {
+                "local.name": "{{localReader}}"
+              }
+            }
+          },
+          "capture": {
+            "usagePath": "source.value"
+          },
+          "expect": "required"
+        },
+        {
+          "id": "reader-export",
+          "description": "The name the reader's chunk exports it under, which the import may alias.",
+          "sameFileAs": "status-fetch",
+          "marker": "[cedar-ember] status fetch failed",
+          "match": {
+            "node": "ImportSpecifier",
+            "where": {
+              "local.name": "{{localReader}}"
+            }
+          },
+          "capture": {
+            "usageExport": "imported.name"
+          },
+          "expect": "required"
+        }
+      ]
+    },
+    {
+      "id": "find-command",
+      "sites": [
+        {
+          "id": "limit-reset",
+          "description": "The /limit-reset command object. /limit-cards goes in beside it: the same chunk, and the slot after it in the command list.",
+          "marker": "Use an available limit reset",
+          "match": {
+            "node": "VariableDeclarator",
+            "where": {
+              "init.type": "ObjectExpression",
+              "init.properties.[].key.name": "isEnabled"
+            },
+            "contains": [
+              "Use an available limit reset",
+              "local-jsx"
+            ]
+          },
+          "capture": {
+            "cmdVar": "id.name"
+          },
+          "expect": "required"
+        },
+        {
+          "id": "limit-reset-alias",
+          "description": "The bundler re-binds each command object under a second name (`Len = t7o` on 2.1.303), and the list holds that one. Optional: if a release drops the alias, the list holds the object's own name.",
+          "sameFileAs": "limit-reset",
+          "marker": "Use an available limit reset",
+          "match": {
+            "node": "VariableDeclarator",
+            "where": {
+              "init.type": "Identifier",
+              "init.name": "{{cmdVar}}"
+            }
+          },
+          "capture": {
+            "cmdAlias": "id.name"
+          },
+          "expect": "optional"
+        }
+      ]
+    },
+    {
+      "id": "register",
+      "sites": [
+        {
+          "id": "declare",
+          "description": "Declare the command after /limit-reset's own declaration. The payload opens with `;` so it starts a statement even if the declaration it follows does not end with one.",
+          "sameFileAs": "limit-reset",
+          "marker": "Use an available limit reset",
+          "match": {
+            "node": "VariableDeclaration",
+            "where": {
+              "declarations.[].id.name": "{{cmdVar}}"
+            }
+          },
+          "edit": {
+            "op": "insert-after",
+            "textFrom": "limit-cards.js"
+          },
+          "expect": "required"
+        },
+        {
+          "id": "command-list",
+          "description": "The built-in command list: the large array that holds /limit-reset. The size bound keeps out any small array that happens to mention it.",
+          "sameFileAs": "limit-reset",
+          "marker": "Use an available limit reset",
+          "match": {
+            "node": "ArrayExpression",
+            "where": {
+              "elements.length": {
+                "gte": 20
+              },
+              "elements.[].name": {
+                "in": [
+                  "{{cmdAlias}}",
+                  "{{cmdVar}}"
+                ]
+              }
+            }
+          },
+          "expect": "required"
+        },
+        {
+          "id": "list-entry",
+          "description": "Put /limit-cards right after /limit-reset in that list.",
+          "within": "command-list",
+          "marker": "Use an available limit reset",
+          "match": {
+            "node": "Identifier",
+            "where": {
+              "name": {
+                "in": [
+                  "{{cmdAlias}}",
+                  "{{cmdVar}}"
+                ]
+              }
+            }
+          },
+          "edit": {
+            "op": "insert-after",
+            "text": ",__ccppLimitCardsCmd"
+          },
+          "expect": "required"
+        }
+      ]
+    }
+  ],
+  "verify": [
+    {
+      "match": {
+        "node": "VariableDeclarator",
+        "where": {
+          "id.name": "__ccppLimitCardsCmd",
+          "init.type": "ObjectExpression"
+        },
+        "has": {
+          "node": "ImportExpression",
+          "where": {
+            "source.value": "{{usagePath}}"
+          }
+        }
+      },
+      "describe": "/limit-cards is declared and loads the usage reader's chunk"
+    },
+    {
+      "match": {
+        "node": "ArrayExpression",
+        "where": {
+          "elements.[].name": "__ccppLimitCardsCmd"
+        }
+      },
+      "describe": "/limit-cards is in the command list"
+    }
+  ]
+}

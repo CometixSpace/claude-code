@@ -44,10 +44,12 @@ is set, so applying them is harmless on its own.
 | `cleanup-period` | Keep transcripts 9999 days instead of 30 | — | low |
 | `disable-collapse-read-search` | Tool calls on their own rows instead of a folded summary; todo/task tools, ToolSearch and thinking still fold | — | low |
 | `enable-keybindings` | Ctrl+C exits instead of aborting the agent loop | — | low |
+| `limit-cards` | `/limit-cards` lists your usage-limit resets — id, count left, validity, what each clears — without using one | — | low |
 | `file-read-limit` | Read accepts files up to 100k tokens instead of 25k | — | medium |
 | `context-limit` | Set the context window for any model | env `CLAUDE_CODE_CONTEXT_LIMIT` | medium |
 | `classifier-model` | Run the auto-mode safety classifier on a cheaper model | env `CLAUDE_CLASSIFIER_MODEL` | medium |
 | `chrome-local-socket` | Claude in Chrome over the local native host instead of the cloud bridge | — | medium |
+| `enable-limit-reset` | `/limit-reset` in the `/` menu, offering resets whatever the client flag says | — | medium |
 | `classifier-fail-open` | Unreachable classifier asks instead of denying | — | high |
 | `transcript-dialog-replay` | Permission dialogs raised under Ctrl+O are no longer lost | — | high |
 | `unlock-ultracode` | `/effort ultracode` on models that only advertise max effort | — | high |
@@ -117,6 +119,48 @@ still interrupts. The transcript view's own Ctrl+C binding is untouched.
 Keybinding customisation (`~/.claude/keybindings.json`) is already enabled
 upstream on 2.1.280; the patch reports that site as satisfied.
 
+### limit-cards
+
+`/limit-reset` can use a usage-limit reset, but there is no way to just look
+at them: when one is usable it goes straight to its confirm dialog, and
+otherwise it shows a single line. `/limit-cards` lists them, as markdown —
+command output goes through the same renderer as assistant text, so the
+tables get the terminal's box drawing and theme colours, and on a narrow
+terminal they stack into rows of fields instead of wrapping mid-line:
+
+````markdown
+**Limit resets** · 1 of 1 usable now · read-only, nothing was used
+
+eligible · at a limit: week+extra · week resets 09-30 23:00 (in 2d 4h)
+
+| Reset | Left | Status | Clears | Expires |
+|---|---|---|---|---|
+| ▸ `opus55-launch-promax-20260921` | 1/1 | **usable now** | session, week, week+extra | 10-23 (in 24d) |
+
+- `opus55-launch-promax-20260921` Claude Opus 5.5 launch: one usage-limit reset for Pro and Max
+
+**Weekly session reset** · not offered (not\_at\_wall)
+
+| Limit | Used | Resets |
+|---|---|---|
+| session | `▋░░░░░░░░░` 6% | 22:09 (in 3h 59m) |
+| week | `██████████` 100% | 09-30 22:59 (in 2d 4h) |
+
+Use one with `/limit-reset` · `/limit-cards json` shows the raw blocks
+````
+
+`/limit-cards json` prints the raw `cedar_ember` and `juniper_tide` blocks
+as a JSON code block instead. The command sends only the read `/limit-reset`
+itself sends first, `GET /api/oauth/usage?cedar_ember=1&skip_spend=1`,
+through the host's usage reader, so token refresh and retries behave as they
+do there. It never calls `reset_rate_limits`. Resets are reported only to a
+claude.ai login; with an API key it says so.
+
+The reader sits in another chunk. The patch reads that chunk's name and the
+reader's export off the cedar-ember status fetch's own import, and the
+command reaches it with a dynamic `import()` when it runs, so the chunk it
+lands in gains no static dependency.
+
 ### file-read-limit
 
 Read refuses files over 25,000 tokens and asks for offset/limit. This raises
@@ -169,6 +213,32 @@ reported "Browser extension is not connected". This forces the local path and
 clears the bridge configuration. The bridge-only tools (`switch_browser`,
 `list_connected_browsers`, `select_browser`) then answer that they need a
 bridge connection — they cannot work over a socket.
+
+### enable-limit-reset
+
+`/limit-reset` is hidden from the `/` menu, and the client only runs its reset
+flow when the `tengu_cedar_ember` flag is on. With the flag off the command is
+disabled, or falls through to the weekly session reset. This forces the
+flag's reader on and unhides the command, so it always lists and runs as
+designed:
+
+- It reads your resets and offers the next usable one in its confirm dialog
+  (`Use your reset?` → `Yes, use my reset` / `No, keep it`). Only Yes sends
+  `POST reset_rate_limits`; No and Esc use nothing.
+- Whether a reset is granted is still the server's call. An account it has
+  not enabled answers `ineligible` (`config_off`), and nothing is used.
+- The rest of what the flag gates comes along: at a usage limit the client
+  reads the reset status and offers `/limit-reset` in the limit notice.
+
+Left as they are: the claude.ai login check, and the client's own conditions
+for offering a reset — first-party API (`ANTHROPIC_BASE_URL` unset or
+`api.anthropic.com`), an interactive session, not a remote workspace. Outside
+them `/limit-reset` reports no reset without asking the server;
+`/limit-cards` still reads them.
+
+The weekly session reset (`tengu_nifty_lemur`) is not forced. When no reset
+card is usable and that one is offered, `/limit-reset` claims it without a
+confirm dialog, as upstream does.
 
 ### unlock-ultracode
 

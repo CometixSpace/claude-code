@@ -1,0 +1,148 @@
+{
+  "id": "enable-limit-reset",
+  "title": "Show /limit-reset and let it offer resets whatever the client flag says",
+  "description": "/limit-reset is hidden from the / menu, and the client only runs its reset flow when the tengu_cedar_ember flag is on: with the flag off the command is disabled, or falls through to the weekly session reset. This forces that flag's reader on and unhides the command, so /limit-reset always lists and runs as designed — it reads the account's resets, offers the next usable one in its confirm dialog, and only on Yes sends POST reset_rate_limits. Whether a reset is actually granted is still the server's call: an account it hasn't enabled gets ineligible (config_off) and nothing is used. Everything else the flag gates comes along too, as designed: at a usage limit the client reads the reset status and shows the /limit-reset offer in the limit notice. The claude.ai login check and the first-party, interactive-session checks are left as they are.",
+  "risk": "medium",
+  "versions": ">=2.1.280",
+  "stages": [
+    {
+      "id": "find-gate",
+      "sites": [
+        {
+          "id": "description-gate",
+          "description": "/limit-reset's description getter picks the reset-card text when the cedar_ember gate is on. The call it tests is that gate, by definition — found through the text it selects rather than through the flag name, which only appears in a constant the reader consults indirectly.",
+          "marker": "Use an available limit reset",
+          "match": {
+            "node": "ConditionalExpression",
+            "where": {
+              "consequent.value": {
+                "matches": "/^Use an available limit reset/"
+              },
+              "test.type": "CallExpression",
+              "test.callee.type": "Identifier",
+              "test.arguments.length": 0
+            }
+          },
+          "capture": {
+            "gateFn": "test.callee.name"
+          },
+          "expect": "required"
+        }
+      ]
+    },
+    {
+      "id": "force",
+      "sites": [
+        {
+          "id": "gate",
+          "description": "`function ype(){return oSe().enabled===!0}` on 2.1.303: the one-line reader of the flag's enabled field. Every cedar_ember check goes through it — the command's isEnabled and description, its call, and the wall-time status read and offer in the rate-limit chunk, which import it — so forcing this declaration covers them all.",
+          "sameFileAs": "description-gate",
+          "marker": "Use an available limit reset",
+          "match": {
+            "node": "FunctionDeclaration",
+            "where": {
+              "id.name": "{{gateFn}}",
+              "params.length": 0,
+              "body.body.length": 1
+            },
+            "has": {
+              "node": "MemberExpression",
+              "where": {
+                "property.name": "enabled"
+              }
+            }
+          },
+          "edit": {
+            "op": "replace-body",
+            "text": "{return!0}"
+          },
+          "expect": "required"
+        },
+        {
+          "id": "command",
+          "description": "The /limit-reset command object.",
+          "marker": "Use an available limit reset",
+          "match": {
+            "node": "ObjectExpression",
+            "where": {
+              "properties.[].key.name": "isEnabled"
+            },
+            "contains": [
+              "Use an available limit reset",
+              "local-jsx"
+            ]
+          },
+          "expect": "required"
+        },
+        {
+          "id": "hidden",
+          "description": "Its `isHidden: !0`, which keeps it out of the / menu even when enabled.",
+          "within": "command",
+          "marker": "Use an available limit reset",
+          "match": {
+            "node": "Property",
+            "where": {
+              "key.name": "isHidden",
+              "value.type": "UnaryExpression",
+              "value.argument.value": 0
+            }
+          },
+          "satisfiedWhen": {
+            "node": "ObjectExpression",
+            "where": {
+              "properties.[].key.name": "isEnabled"
+            },
+            "contains": [
+              "Use an available limit reset",
+              "local-jsx"
+            ],
+            "hasNot": {
+              "node": "Property",
+              "where": {
+                "key.name": "isHidden",
+                "value.argument.value": 0
+              }
+            }
+          },
+          "edit": {
+            "op": "replace-value",
+            "text": "!1"
+          },
+          "expect": "required"
+        }
+      ]
+    }
+  ],
+  "verify": [
+    {
+      "match": {
+        "node": "FunctionDeclaration",
+        "where": {
+          "id.name": "{{gateFn}}",
+          "body.body.length": 1
+        },
+        "has": {
+          "node": "ReturnStatement",
+          "where": {
+            "argument.argument.value": 0
+          }
+        }
+      },
+      "describe": "cedar_ember gate forced true"
+    },
+    {
+      "match": {
+        "node": "ObjectExpression",
+        "contains": "Use an available limit reset",
+        "has": {
+          "node": "Property",
+          "where": {
+            "key.name": "isHidden",
+            "value.argument.value": 1
+          }
+        }
+      },
+      "describe": "/limit-reset is no longer hidden"
+    }
+  ]
+}
