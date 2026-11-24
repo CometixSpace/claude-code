@@ -49,7 +49,7 @@ is set, so applying them is harmless on its own.
 | `context-limit` | Set the context window for any model | env `CLAUDE_CODE_CONTEXT_LIMIT` | medium |
 | `classifier-model` | Run the auto-mode safety classifier on a cheaper model | env `CLAUDE_CLASSIFIER_MODEL` | medium |
 | `chrome-local-socket` | Claude in Chrome over the local native host instead of the cloud bridge | — | medium |
-| `enable-limit-reset` | `/limit-reset` in the `/` menu, offering resets whatever the client flag says | — | medium |
+| `enable-limit-reset` | `/limit-reset` in the `/` menu, offering resets whatever the client flag says; its claim gets past `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` | — | medium |
 | `classifier-fail-open` | Unreachable classifier asks instead of denying | — | high |
 | `transcript-dialog-replay` | Permission dialogs raised under Ctrl+O are no longer lost | — | high |
 | `unlock-ultracode` | `/effort ultracode` on models that only advertise max effort | — | high |
@@ -239,6 +239,17 @@ them `/limit-reset` reports no reset without asking the server;
 The weekly session reset (`tengu_nifty_lemur`) is not forced. When no reset
 card is usable and that one is offered, `/limit-reset` claims it without a
 confirm dialog, as upstream does.
+
+Both claims are let past `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`. With that
+variable set, the first-party client refuses any request that has not opted
+out of the essential-traffic gate, before sending it — and the claim had not:
+Yes ended in `Couldn't confirm the reset went through`, with nothing sent and
+nothing used. A claim only goes out after an explicit Yes, so it now carries
+the client's own `bypassEssentialTrafficOnly` opt-out — only the two claims,
+nothing else. The reads before a claim — the reset status, and `/limit-cards`
+— go through the shared usage fetch, which the same variable also blocks and
+which this patch leaves alone: under that variable they fail until the usage
+fetch is let through as well.
 
 ### unlock-ultracode
 

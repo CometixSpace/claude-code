@@ -1,7 +1,7 @@
 {
   "id": "enable-limit-reset",
   "title": "Show /limit-reset and let it offer resets whatever the client flag says",
-  "description": "/limit-reset is hidden from the / menu, and the client only runs its reset flow when the tengu_cedar_ember flag is on: with the flag off the command is disabled, or falls through to the weekly session reset. This forces that flag's reader on and unhides the command, so /limit-reset always lists and runs as designed — it reads the account's resets, offers the next usable one in its confirm dialog, and only on Yes sends POST reset_rate_limits. Whether a reset is actually granted is still the server's call: an account it hasn't enabled gets ineligible (config_off) and nothing is used. Everything else the flag gates comes along too, as designed: at a usage limit the client reads the reset status and shows the /limit-reset offer in the limit notice. The claude.ai login check and the first-party, interactive-session checks are left as they are.",
+  "description": "/limit-reset is hidden from the / menu, and the client only runs its reset flow when the tengu_cedar_ember flag is on: with the flag off the command is disabled, or falls through to the weekly session reset. This forces that flag's reader on and unhides the command, so /limit-reset always lists and runs as designed — it reads the account's resets, offers the next usable one in its confirm dialog, and only on Yes sends POST reset_rate_limits. Whether a reset is actually granted is still the server's call: an account it hasn't enabled gets ineligible (config_off) and nothing is used. Everything else the flag gates comes along too, as designed: at a usage limit the client reads the reset status and shows the /limit-reset offer in the limit notice. The claude.ai login check and the first-party, interactive-session checks are left as they are.\n\nThe claim itself is also let past CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC. With that variable set, the first-party client refuses any request that does not opt out of the essential-traffic gate before sending it, and the claim did not opt out: Yes ended in 'Couldn't confirm the reset went through' with nothing sent and nothing used. A claim only goes out after an explicit Yes, which is essential traffic by any reading, so both claims (reset card and weekly session reset) now carry the client's own bypassEssentialTrafficOnly opt-out. The reads before a claim are not touched here; under that variable they need the usage read let through as well.",
   "risk": "medium",
   "versions": ">=2.1.280",
   "stages": [
@@ -111,6 +111,96 @@
           "expect": "required"
         }
       ]
+    },
+    {
+      "id": "let-claims-through",
+      "sites": [
+        {
+          "id": "card-claim",
+          "description": "The reset-card claim: POSTs reset_rate_limits with program cedar_ember. Found by its own not-sent log line, which is also where the essential-traffic refusal ended up: `[cedar-ember] claim not sent: essential-traffic-only`.",
+          "marker": "[cedar-ember] claim not sent",
+          "match": {
+            "node": "FunctionDeclaration",
+            "contains": [
+              "[cedar-ember] claim not sent",
+              "reset_rate_limits"
+            ]
+          },
+          "expect": "required"
+        },
+        {
+          "id": "card-claim-bypass",
+          "description": "The options of its one client call, recognised by refreshOAuth. The opt-out goes in front of it, so the rest of the object is untouched.",
+          "within": "card-claim",
+          "marker": "[cedar-ember] claim not sent",
+          "match": {
+            "node": "Property",
+            "where": {
+              "key.name": "refreshOAuth"
+            }
+          },
+          "satisfiedWhen": {
+            "node": "FunctionDeclaration",
+            "contains": [
+              "[cedar-ember] claim not sent",
+              "bypassEssentialTrafficOnly"
+            ]
+          },
+          "edit": {
+            "op": "insert-before",
+            "text": "bypassEssentialTrafficOnly:!0,"
+          },
+          "expect": "required"
+        },
+        {
+          "id": "session-claim",
+          "description": "The weekly session-reset claim: the same endpoint with program juniper_tide. Optional, since this patch does not force that path on; if a release drops it, the card claim still stands.",
+          "marker": "[juniper-tide] claim not sent",
+          "match": {
+            "node": "FunctionDeclaration",
+            "contains": [
+              "[juniper-tide] claim not sent",
+              "reset_rate_limits"
+            ]
+          },
+          "expect": "optional",
+          "capture": {
+            "sessionClaimFn": "id.name"
+          }
+        }
+      ]
+    },
+    {
+      "id": "let-session-claim-through",
+      "when": {
+        "captured": "sessionClaimFn"
+      },
+      "sites": [
+        {
+          "id": "session-claim-bypass",
+          "description": "Its options, the same way. In a stage of its own that runs only when the session claim was found: a `within` whose anchor matched nothing is an error, not a skip.",
+          "within": "session-claim",
+          "marker": "[juniper-tide] claim not sent",
+          "match": {
+            "node": "Property",
+            "where": {
+              "key.name": "refreshOAuth"
+            }
+          },
+          "satisfiedWhen": {
+            "node": "FunctionDeclaration",
+            "contains": [
+              "[juniper-tide] claim not sent",
+              "bypassEssentialTrafficOnly"
+            ]
+          },
+          "edit": {
+            "op": "insert-before",
+            "text": "bypassEssentialTrafficOnly:!0,"
+          },
+          "expect": "required"
+        }
+      ]
     }
   ],
   "verify": [
@@ -143,6 +233,16 @@
         }
       },
       "describe": "/limit-reset is no longer hidden"
+    },
+    {
+      "match": {
+        "node": "FunctionDeclaration",
+        "contains": [
+          "[cedar-ember] claim not sent",
+          "bypassEssentialTrafficOnly"
+        ]
+      },
+      "describe": "the reset-card claim opts out of the essential-traffic gate"
     }
   ]
 }
